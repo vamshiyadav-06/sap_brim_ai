@@ -119,8 +119,10 @@ Open `.env` (`nano .env`) and set:
 | `SAP_BRIM_DB_PASSWORD` | a new random value (application database user) |
 | `DATABASE_URL` | replace `change-me-app-password` with the **same** value as `SAP_BRIM_DB_PASSWORD`; keep `@postgres:5432` |
 | `JWT_SECRET` | a new random value (signs login tokens; at least 32 characters) |
+| `REDIS_PASSWORD` | a new random value, e.g. `openssl rand -hex 32` (protects the private Redis service that shares rate limits and login lockout between workers; `docker compose` refuses to start without it) |
 | `SUPER_ADMIN_EMAIL`, `SUPER_ADMIN_PASSWORD` | your admin login (password 12-72 characters) |
 | `GROQ_API_KEY` (and/or `GEMINI_API_KEY`, `OPENROUTER_API_KEY`) | at least one LLM key |
+| `GROQ_API_KEY_FALLBACK_1` to `_3` (same for `GEMINI_` and `OPENROUTER_`) | optional extra keys for the worst case, see [Fallback API keys](#fallback-api-keys) |
 | `WEB_SEARCH_API_KEY` | Tavily key, optional |
 | `APP_UID` | only if `id -u` was not `1000` |
 | `REGISTRATION_ENABLED` | `True` shows the Register button (open sign-up, no e-mail verification: anyone can use your LLM quota); `False` hides it and you create users with `backend/scripts/create_user.py`. It is built into the web image, so rebuild after changing it. |
@@ -320,6 +322,28 @@ docker compose up -d                    # start again
 ### Capacity
 
 The backend runs **one** worker process on purpose: rate limits, login lockout and the Stop button for answers that keep generating after the browser leaves are tracked inside that process (`KNOWN_ISSUES.md` STREAM-001). For more capacity, give the server more CPU and RAM. Running several workers or replicas first needs `REDIS_URL` (shared rate limits) and the STREAM-001 fix.
+
+**Many users at once.** The number of answers that run at the same time is bounded, so one burst of questions cannot take the service down:
+
+| Setting (`.env`) | Default | Meaning |
+| --- | --- | --- |
+| `MAX_CONCURRENT_ANSWERS` | 16 | answers running at once (0 = no limit) |
+| `ANSWER_QUEUE_MAX` / `ANSWER_QUEUE_WAIT_SECONDS` | 32 / 15 | how many more may wait for a slot, and for how long; everyone beyond that gets an immediate "busy, try again" (HTTP 503 with `Retry-After`) |
+| `MAX_CONCURRENT_ANSWERS_PER_USER` | 3 | one user cannot take every slot (HTTP 429) |
+| `DATABASE_POOL_SIZE` / `DATABASE_MAX_OVERFLOW` / `DATABASE_POOL_TIMEOUT` | 10 / 20 / 10 | database connections, and how long a request waits for one before a clean 503 |
+| `THREADPOOL_SIZE` | 64 | threads for synchronous endpoints (framework default is 40) |
+| `SHUTDOWN_DRAIN_SECONDS` | 25 | on stop or redeploy, running answers get this long to finish and be saved (`stop_grace_period` is 30 s) |
+| `WEB_SEARCH_TIMEOUT_SECONDS` | 15 | per call to the web-search provider |
+
+A slot lasts as long as the answer, including an answer that keeps generating after the browser left. Keep `MAX_CONCURRENT_ANSWERS + 6 <= DATABASE_POOL_SIZE + DATABASE_MAX_OVERFLOW`: each running answer can use a database connection, and sign-in and health checks need some left (the backend logs a `[CAPACITY]` warning at start if this is violated). `/health` has its own executor and a 3-second timeout, so a busy service still reports healthy and a stuck one reports unhealthy quickly instead of hanging. The limits are **per backend process**; with the single worker above they are the limits of the service.
+
+These numbers are conservative defaults, not measured capacity. The provider quotas (Groq's free tier allows about 8,000 tokens a minute) usually limit throughput before the server does. Measure on staging with `scripts/staging/test-load.py` and the approved providers, then adjust.
+
+### Fallback API keys
+
+Each provider can have up to three extra keys for the worst case: `GROQ_API_KEY_FALLBACK_1` to `_3`, `GEMINI_API_KEY_FALLBACK_1` to `_3`, `OPENROUTER_API_KEY_FALLBACK_1` to `_3`. The names are in `.env.production.example`; leave a value empty to leave that slot unused. Put a key in, run `docker compose up -d backend`, and it is used automatically; nothing else needs changing.
+
+Order: the normal key first, then fallback 1, 2, 3. The next key is tried **only** when the key before it is rejected (401/403), out of credit (402) or out of quota (429). A problem that is not the key's fault (an empty reply, a too-long prompt) does not use up the other keys. A key that failed is skipped for a while (a rejected key for an hour, a rate limit for the provider's retry time) while the next key answers. Only when every key of a provider fails does the request move on to the next provider (Groq, then Gemini, then OpenRouter, then web search). A streamed answer never changes key after text was sent. Use a separate key for each slot, ideally from a separate account, since keys of one account share one quota. Key values are never logged. The OpenRouter tier also needs paid models in `LLM_OPENROUTER_MODELS` or `LLM_ALLOW_FREE_TIER=True`.
 
 ## 10. Troubleshooting
 

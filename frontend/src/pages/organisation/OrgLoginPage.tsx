@@ -5,6 +5,7 @@ import { PageMeta } from '../../components/ui/PageMeta';
 import { OrgAuthLayout } from '../../components/organisation/OrgAuthLayout';
 import { useAuth } from '../../context/AuthContext';
 import { ORG_ACTIVATE_PATH, isOrgUser, orgSignInDecision, postSignInPath } from '../../layouts/accountRouting';
+import { ApiError } from '../../services/api';
 
 /** Organisation sign-in (POST /org/auth/login). Individual accounts are told to use /login. */
 export const OrgLoginPage: React.FC = () => {
@@ -14,6 +15,8 @@ export const OrgLoginPage: React.FC = () => {
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [unlockKey, setUnlockKey] = useState('');
+  const [unlockRequired, setUnlockRequired] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(() =>
@@ -32,9 +35,10 @@ export const OrgLoginPage: React.FC = () => {
     setError(null);
     setLoading(true);
     try {
-      const signedIn = await orgLogin(email.trim(), password);
+      const signedIn = await orgLogin(email.trim(), password, unlockKey.trim() || undefined);
       navigate(postSignInPath(signedIn), { replace: true });
     } catch (err) {
+      if (err instanceof ApiError && err.status === 423) setUnlockRequired(true);
       setError(err instanceof Error ? err.message : 'Sign-in failed. Please check your credentials.');
     } finally {
       setLoading(false);
@@ -122,6 +126,25 @@ export const OrgLoginPage: React.FC = () => {
               your own straight after.
             </small>
           </div>
+
+          {!unlockRequired ? null : (
+            <div className="auth-field">
+              <label htmlFor="org-login-unlock-key">Admin unlock key</label>
+              <div className="auth-input">
+                <KeyRound aria-hidden="true" />
+                <input
+                  id="org-login-unlock-key"
+                  type="text"
+                  required
+                  autoComplete="one-time-code"
+                  value={unlockKey}
+                  onChange={(event) => setUnlockKey(event.target.value)}
+                  placeholder="Enter the one-time key from your administrator"
+                />
+              </div>
+              <small className="auth-hint">Ask your administrator for a one-time unlock key.</small>
+            </div>
+          )}
 
           <button type="submit" disabled={loading} className="button button-brand auth-submit">
             <span>{loading ? 'Signing in…' : 'Sign in to workspace'}</span>

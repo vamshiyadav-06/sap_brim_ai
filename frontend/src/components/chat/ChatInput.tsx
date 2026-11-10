@@ -13,11 +13,24 @@ import {
   FileCode,
   Image as ImageIcon,
   FolderOpen,
+  Link2,
+  Paperclip,
   Loader2,
   CheckCircle2,
   AlertCircle,
 } from 'lucide-react';
-import { apiExtractDocument } from '../../services/api';
+import { apiExtractDocument, apiExtractUrl } from '../../services/api';
+import {
+  MAX_ATTACHMENTS,
+  collectDropped,
+  displayName,
+  extractUrls,
+  inPool,
+  isHttpUrl,
+  linkLabel,
+  selectReadableFiles,
+  type PickedFile,
+} from './attachmentIntake';
 import type { ChatMode, DocumentAttachment } from '../../types';
 
 interface ChatInputProps {
@@ -32,7 +45,10 @@ interface ChatInputProps {
 
 interface LocalAttachment {
   id: string;
-  file: File;
+  /** The uploaded file; absent for a linked page. */
+  file?: File;
+  /** The linked address, for a linked page. */
+  url?: string;
   name: string;
   size: number;
   file_type: string;
@@ -54,7 +70,6 @@ const PASTE_IMAGE_TYPES: Record<string, string> = {
   'image/webp': 'webp',
   'image/bmp': 'bmp',
 };
-const IMAGE_ACCEPT = '.png,.jpg,.jpeg,.webp,.bmp,image/png,image/jpeg,image/webp,image/bmp';
 
 const isImageType = (fileType: string) => IMAGE_EXTENSIONS.includes(fileType);
 
@@ -76,6 +91,12 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSendMessage, onStop, isL
   const [isListening, setIsListening] = useState(false);
   const [voiceSupported, setVoiceSupported] = useState(false);
   const [voiceError, setVoiceError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [showLinkInput, setShowLinkInput] = useState(false);
+  const [linkDraft, setLinkDraft] = useState('');
+  const [isReadingLinks, setIsReadingLinks] = useState(false);
+  // Links that could not be read: the next send goes ahead without them instead of blocking the question.
+  const skippedLinksRef = useRef<Set<string>>(new Set());
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const recognitionRef = useRef<any>(null);
@@ -83,11 +104,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSendMessage, onStop, isL
   const menuRef = useRef<HTMLDivElement>(null);
   const attachButtonRef = useRef<HTMLButtonElement>(null);
 
-  const pdfInputRef = useRef<HTMLInputElement>(null);
-  const docxInputRef = useRef<HTMLInputElement>(null);
-  const dataInputRef = useRef<HTMLInputElement>(null);
-  const allInputRef = useRef<HTMLInputElement>(null);
-  const imageInputRef = useRef<HTMLInputElement>(null);
+  const filesInputRef = useRef<HTMLInputElement>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
 
   // Close attachment dropdown when clicking outside
   useEffect(() => {
@@ -217,6 +235,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSendMessage, onStop, isL
         return 'bg-red-500/15 text-red-600 dark:text-red-400 border-red-500/30';
       case 'docx':
       case 'doc':
+      case 'rtf':
+      case 'odt':
         return 'bg-blue-500/15 text-blue-600 dark:text-blue-400 border-blue-500/30';
       case 'png':
       case 'jpg':
@@ -224,9 +244,19 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSendMessage, onStop, isL
       case 'webp':
       case 'bmp':
         return 'bg-violet-500/15 text-violet-600 dark:text-violet-400 border-violet-500/30';
+      case 'pptx':
+      case 'ppt':
+      case 'odp':
+        return 'bg-orange-500/15 text-orange-600 dark:text-orange-400 border-orange-500/30';
+      case 'url':
+      case 'html':
+      case 'htm':
+        return 'bg-sky-500/15 text-sky-600 dark:text-sky-400 border-sky-500/30';
       case 'csv':
       case 'xlsx':
+      case 'xlsm':
       case 'xls':
+      case 'ods':
         return 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30';
       case 'json':
       case 'xml':
@@ -237,64 +267,110 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSendMessage, onStop, isL
     }
   };
 
-  const handleFilesSelected = async (files: FileList | File[]) => {
-    const fileArray = Array.from(files);
-    if (fileArray.length === 0) return;
-    setShowAttachMenu(false);
+  const patchAttachment = (id: string, patch: Partial<LocalAttachment>) =>
+    setAttachments((prev) => prev.map((a) => (a.id === id ? { ...a, ...patch } : a)));
 
-    const newItems: LocalAttachment[] = fileArray.map((f) => {
-      const fileType = f.name.split('.').pop()?.toLowerCase() || 'txt';
+  const newId = () => `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+
+  const handleFilesSelected = async (picked: PickedFile[]) => {
+    if (picked.length === 0) return;
+    setShowAttachMenu(false);
+    const { accepted, skipped } = selectReadableFiles(picked, MAX_ATTACHMENTS - attachments.length);
+    if (skipped > 0) {
+      setNotice(
+        accepted.length === 0
+          ? `Nothing was added: ${skipped} file(s) were hidden, empty, over 10 MB, unreadable binaries, or over the ${MAX_ATTACHMENTS}-file limit.`
+          : `Added ${accepted.length} of ${picked.length} files. ${skipped} were skipped (hidden, empty, over 10 MB, unreadable binaries, or over the ${MAX_ATTACHMENTS}-file limit).`
+      );
+    } else {
+      setNotice(null);
+    }
+    if (accepted.length === 0) return;
+
+    const newItems: LocalAttachment[] = accepted.map(({ file, path }) => {
+      const fileType = file.name.split('.').pop()?.toLowerCase() || 'txt';
       return {
-        id: `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
-        file: f,
-        name: f.name,
-        size: f.size,
+        id: newId(),
+        file,
+        name: displayName(path),
+        size: file.size,
         file_type: fileType,
         status: 'extracting',
-        thumbUrl: isImageType(fileType) ? URL.createObjectURL(f) : undefined,
+        thumbUrl: isImageType(fileType) ? URL.createObjectURL(file) : undefined,
       };
     });
-
     setAttachments((prev) => [...prev, ...newItems]);
 
-    for (const item of newItems) {
+    await inPool(newItems, 3, async (item) => {
       try {
-        const res = await apiExtractDocument(item.file);
-        setAttachments((prev) =>
-          prev.map((a) =>
-            a.id === item.id
-              ? {
-                  ...a,
-                  status: 'ready',
-                  page_count: res.page_count,
-                  char_count: res.char_count,
-                  text: res.text,
-                  preview: res.preview,
-                  detected_question: res.detected_question,
-                  analysis_method: res.analysis_method,
-                }
-              : a
-          )
-        );
+        const res = await apiExtractDocument(item.file!);
+        patchAttachment(item.id, {
+          status: 'ready',
+          page_count: res.page_count,
+          char_count: res.char_count,
+          text: res.text,
+          preview: res.preview,
+          detected_question: res.detected_question,
+          analysis_method: res.analysis_method,
+        });
       } catch (err: any) {
-        setAttachments((prev) =>
-          prev.map((a) =>
-            a.id === item.id
-              ? {
-                  ...a,
-                  status: 'error',
-                  errorMessage: err.message || 'Could not extract text',
-                }
-              : a
-          )
-        );
+        patchAttachment(item.id, { status: 'error', errorMessage: err.message || 'Could not extract text' });
       }
+    });
+  };
+
+  /** Reads a linked page or online file and adds it like an uploaded document. Resolves to false when it failed. */
+  const addLink = async (rawUrl: string): Promise<boolean> => {
+    const url = rawUrl.trim();
+    if (!isHttpUrl(url)) {
+      setNotice('Enter a full web link that starts with http:// or https://');
+      return false;
     }
+    if (attachments.some((a) => a.url === url)) return true;
+    if (attachments.length >= MAX_ATTACHMENTS) {
+      setNotice(`You can attach up to ${MAX_ATTACHMENTS} files and links to one message.`);
+      return false;
+    }
+    const id = newId();
+    setAttachments((prev) => [
+      ...prev,
+      { id, url, name: linkLabel(url), size: 0, file_type: 'url', status: 'extracting' },
+    ]);
+    try {
+      const res = await apiExtractUrl(url);
+      patchAttachment(id, {
+        status: 'ready',
+        name: res.filename || linkLabel(url),
+        size: res.size_bytes,
+        page_count: res.page_count,
+        char_count: res.char_count,
+        text: res.text,
+        preview: res.preview,
+      });
+      return true;
+    } catch (err: any) {
+      patchAttachment(id, { status: 'error', errorMessage: err.message || 'Could not read the link' });
+      return false;
+    }
+  };
+
+  const submitLinkDraft = async () => {
+    const url = linkDraft.trim();
+    if (!url) return;
+    setShowAttachMenu(false);
+    setShowLinkInput(false);
+    setLinkDraft('');
+    await addLink(url);
   };
 
   const handleFileInputChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const selected = event.currentTarget.files;
-    if (selected) void handleFilesSelected(selected);
+    if (selected) {
+      // A folder pick reports each file's path inside the folder; a file pick only its name.
+      void handleFilesSelected(
+        Array.from(selected).map((file) => ({ file, path: file.webkitRelativePath || file.name }))
+      );
+    }
     // Allow selecting the same file again after removing it or correcting an extraction issue.
     event.currentTarget.value = '';
   };
@@ -314,7 +390,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSendMessage, onStop, isL
           type: f.type,
         })
     );
-    void handleFilesSelected(named);
+    void handleFilesSelected(named.map((file) => ({ file, path: file.name })));
   };
 
   const removeAttachment = (id: string) => {
@@ -325,13 +401,54 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSendMessage, onStop, isL
     });
   };
 
-  const isExtracting = attachments.some((a) => a.status === 'extracting');
+  const isExtracting = attachments.some((a) => a.status === 'extracting') || isReadingLinks;
 
-  const handleSubmit = (e?: React.FormEvent) => {
+  const handleSubmit = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (isLoading || isExtracting) return;
 
-    const readyAttachments: DocumentAttachment[] = attachments
+    // Links typed or pasted in the question are read first, so the answer can use the pages they point to.
+    let linkAttachments: LocalAttachment[] = [];
+    const typedLinks = extractUrls(input).filter(
+      (url) => !attachments.some((a) => a.url === url) && !skippedLinksRef.current.has(url)
+    );
+    if (typedLinks.length > 0 && attachments.length < MAX_ATTACHMENTS) {
+      setIsReadingLinks(true);
+      setNotice(null);
+      const results = await inPool(typedLinks.slice(0, MAX_ATTACHMENTS - attachments.length), 3, async (url) => {
+        try {
+          const res = await apiExtractUrl(url);
+          return { url, res, error: null as string | null };
+        } catch (err: any) {
+          return { url, res: null, error: (err.message as string) || 'could not be read' };
+        }
+      });
+      setIsReadingLinks(false);
+      const failed = results.filter((r) => r.error);
+      if (failed.length > 0) {
+        failed.forEach((r) => skippedLinksRef.current.add(r.url));
+        setNotice(
+          `Could not read ${failed.map((r) => linkLabel(r.url)).join(', ')}: ${failed[0].error} ` +
+            'Press send again to ask without reading it, or fix the link.'
+        );
+        return;
+      }
+      linkAttachments = results.map(({ url, res }) => ({
+        id: newId(),
+        url,
+        name: res!.filename || linkLabel(url),
+        size: res!.size_bytes,
+        file_type: 'url',
+        status: 'ready' as const,
+        page_count: res!.page_count,
+        text: res!.text,
+        preview: res!.preview,
+      }));
+    }
+    skippedLinksRef.current.clear();
+    setNotice(null);
+
+    const readyAttachments: DocumentAttachment[] = [...attachments, ...linkAttachments]
       .filter((a) => a.status === 'ready' && a.text)
       .map((a) => ({
         name: a.name,
@@ -390,53 +507,30 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSendMessage, onStop, isL
     e.preventDefault();
     setIsDragging(false);
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      handleFilesSelected(e.dataTransfer.files);
+      // Collected before the first await: the browser clears the drop data afterwards. Folders are walked.
+      void collectDropped(e.dataTransfer).then((picked) => handleFilesSelected(picked));
     }
   };
 
   return (
     <div className="w-full max-w-4xl mx-auto px-4 pb-4 pt-2">
-      {/* Hidden File Inputs */}
+      {/* Hidden pickers: any file type (the server decides what it can read), and a whole folder. */}
+      <input type="file" ref={filesInputRef} multiple className="hidden" onChange={handleFileInputChange} />
       <input
         type="file"
-        ref={pdfInputRef}
-        accept=".pdf"
+        ref={folderInputRef}
         multiple
         className="hidden"
         onChange={handleFileInputChange}
+        {...({ webkitdirectory: '', directory: '' } as Record<string, string>)}
       />
-      <input
-        type="file"
-        ref={docxInputRef}
-        accept=".docx"
-        multiple
-        className="hidden"
-        onChange={handleFileInputChange}
-      />
-      <input
-        type="file"
-        ref={dataInputRef}
-        accept=".txt,.md,.csv,.json,.log,.tsv,.xml,.sql,.yaml,.yml"
-        multiple
-        className="hidden"
-        onChange={handleFileInputChange}
-      />
-      <input
-        type="file"
-        ref={imageInputRef}
-        accept={IMAGE_ACCEPT}
-        multiple
-        className="hidden"
-        onChange={handleFileInputChange}
-      />
-      <input
-        type="file"
-        ref={allInputRef}
-        accept={`.pdf,.docx,${IMAGE_ACCEPT},.txt,.md,.csv,.json,.log,.tsv,.xml,.sql,.yaml,.yml`}
-        multiple
-        className="hidden"
-        onChange={handleFileInputChange}
-      />
+
+      {notice && (
+        <div className="mb-2 px-3 py-2 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-300/60 dark:border-amber-700/50 text-xs text-amber-800 dark:text-amber-200 flex items-start justify-between gap-2">
+          <span>{notice}</span>
+          <button type="button" onClick={() => setNotice(null)} className="font-bold shrink-0" aria-label="Dismiss">✕</button>
+        </div>
+      )}
 
       {/* Voice error toast */}
       {voiceError && (
@@ -478,6 +572,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSendMessage, onStop, isL
               const isDoc = att.file_type === 'docx' || att.file_type === 'doc';
               const isData = ['csv', 'json', 'xlsx'].includes(att.file_type);
               const isImage = isImageType(att.file_type);
+              const isLink = att.file_type === 'url';
 
               return (
                 <div
@@ -493,7 +588,9 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSendMessage, onStop, isL
                     />
                   ) : (
                   <div className={`p-1 rounded-md border shrink-0 ${getFileBadgeColor(att.file_type)}`}>
-                    {isPdf ? (
+                    {isLink ? (
+                      <Link2 className="w-3.5 h-3.5" />
+                    ) : isPdf ? (
                       <FileText className="w-3.5 h-3.5" />
                     ) : isDoc ? (
                       <FileText className="w-3.5 h-3.5" />
@@ -516,7 +613,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSendMessage, onStop, isL
                       {att.status === 'extracting' && (
                         <>
                           <Loader2 className="w-2.5 h-2.5 text-orange-500 animate-spin" />
-                          <span>{isImage ? 'Reading image...' : 'Extracting content...'}</span>
+                          <span>{isLink ? 'Reading link...' : isImage ? 'Reading image...' : 'Extracting content...'}</span>
                         </>
                       )}
                       {att.status === 'ready' && (
@@ -544,7 +641,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSendMessage, onStop, isL
                     type="button"
                     onClick={() => removeAttachment(att.id)}
                     className="p-1 rounded-full text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-800 transition cursor-pointer"
-                    title="Remove file"
+                    title={isLink ? 'Remove link' : 'Remove file'}
                   >
                     <X className="w-3 h-3" />
                   </button>
@@ -584,7 +681,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSendMessage, onStop, isL
                 type="button"
                 onClick={() => setShowAttachMenu((prev) => !prev)}
                 disabled={isLoading}
-                title="Add attachments (PDF, Word, PNG, Text, Data)"
+                title="Add files, folders or links"
                 className={`flex items-center justify-center w-8 h-8 rounded-xl transition duration-150 disabled:opacity-40 disabled:cursor-not-allowed ${
                   showAttachMenu
                     ? 'bg-orange-500 text-white shadow-md shadow-orange-500/25 ring-2 ring-orange-500/30'
@@ -594,104 +691,59 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSendMessage, onStop, isL
                 <Plus className={`w-4 h-4 transition-transform duration-200 ${showAttachMenu ? 'rotate-45' : ''}`} />
               </button>
 
-              {/* ChatGPT-style Attachment Popup Menu */}
+              {/* Attachment popup: a flat list, one icon and one label per row (like ChatGPT) */}
               {showAttachMenu && (
                 <div
                   ref={menuRef}
-                  className="absolute bottom-11 left-0 z-40 w-72 bg-white dark:bg-[#0c0c14] border border-slate-200 dark:border-[#222234] rounded-2xl shadow-2xl p-2 animate-in fade-in zoom-in-95 duration-150 backdrop-blur-md"
+                  role="menu"
+                  className="absolute bottom-11 left-0 z-40 w-64 bg-white dark:bg-[#212129] border border-slate-200 dark:border-[#34343f] rounded-2xl shadow-xl p-1.5 animate-in fade-in zoom-in-95 duration-150"
                 >
-                  <div className="px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500 border-b border-slate-100 dark:border-[#1a1a26] mb-1">
-                    Attach Documents & Content
-                  </div>
-
-                  {/* Option 1: PDF Document */}
                   <button
                     type="button"
-                    onClick={() => {
-                      setShowAttachMenu(false);
-                      pdfInputRef.current?.click();
-                    }}
-                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-left hover:bg-orange-50/80 dark:hover:bg-[#161622] text-slate-800 dark:text-slate-200 hover:text-orange-600 dark:hover:text-orange-400 transition cursor-pointer group"
+                    role="menuitem"
+                    onClick={() => { setShowAttachMenu(false); filesInputRef.current?.click(); }}
+                    className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-left text-sm text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-[#1c1c28] transition-colors cursor-pointer"
                   >
-                    <div className="w-8 h-8 rounded-lg bg-red-500/10 dark:bg-red-500/20 text-red-600 dark:text-red-400 flex items-center justify-center border border-red-500/25 group-hover:scale-105 transition-transform">
-                      <FileText className="w-4 h-4" />
-                    </div>
-                    <div className="flex flex-col">
-                      <span className="text-xs font-semibold">Upload PDF Document</span>
-                      <span className="text-[11px] text-slate-500 dark:text-slate-400">Extracts pages, text & tables (.pdf)</span>
-                    </div>
+                    <Paperclip className="w-[18px] h-[18px] shrink-0 text-slate-600 dark:text-slate-300" />
+                    <span>Upload files</span>
                   </button>
-
-                  {/* Option 2: Word Document */}
                   <button
                     type="button"
-                    onClick={() => {
-                      setShowAttachMenu(false);
-                      docxInputRef.current?.click();
-                    }}
-                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-left hover:bg-blue-50/80 dark:hover:bg-[#161622] text-slate-800 dark:text-slate-200 hover:text-blue-600 dark:hover:text-blue-400 transition cursor-pointer group"
+                    role="menuitem"
+                    onClick={() => { setShowAttachMenu(false); folderInputRef.current?.click(); }}
+                    className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-left text-sm text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-[#1c1c28] transition-colors cursor-pointer"
                   >
-                    <div className="w-8 h-8 rounded-lg bg-blue-500/10 dark:bg-blue-500/20 text-blue-600 dark:text-blue-400 flex items-center justify-center border border-blue-500/25 group-hover:scale-105 transition-transform">
-                      <FileText className="w-4 h-4" />
-                    </div>
-                    <div className="flex flex-col">
-                      <span className="text-xs font-semibold">Upload Word Document</span>
-                      <span className="text-[11px] text-slate-500 dark:text-slate-400">Functional specs & guides (.docx)</span>
-                    </div>
+                    <FolderOpen className="w-[18px] h-[18px] shrink-0 text-slate-600 dark:text-slate-300" />
+                    <span>Upload a folder</span>
                   </button>
-
-                  {/* Option 3: Text & Data */}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowAttachMenu(false);
-                      dataInputRef.current?.click();
-                    }}
-                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-left hover:bg-emerald-50/80 dark:hover:bg-[#161622] text-slate-800 dark:text-slate-200 hover:text-emerald-600 dark:hover:text-emerald-400 transition cursor-pointer group"
-                  >
-                    <div className="w-8 h-8 rounded-lg bg-emerald-500/10 dark:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 flex items-center justify-center border border-emerald-500/25 group-hover:scale-105 transition-transform">
-                      <FileSpreadsheet className="w-4 h-4" />
+                  {showLinkInput ? (
+                    <div className="flex items-center gap-2 px-3 py-1.5">
+                      <Link2 className="w-[18px] h-[18px] shrink-0 text-slate-600 dark:text-slate-300" />
+                      <input
+                        type="url"
+                        value={linkDraft}
+                        autoFocus
+                        onChange={(e) => setLinkDraft(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') { e.preventDefault(); void submitLinkDraft(); }
+                          if (e.key === 'Escape') { setShowLinkInput(false); setLinkDraft(''); }
+                        }}
+                        placeholder="Paste a link and press Enter"
+                        aria-label="Link address"
+                        className="min-w-0 flex-1 bg-transparent text-sm text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none"
+                      />
                     </div>
-                    <div className="flex flex-col">
-                      <span className="text-xs font-semibold">Upload Text & Data</span>
-                      <span className="text-[11px] text-slate-500 dark:text-slate-400">Notes, CSV, JSON, logs & markdown</span>
-                    </div>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowAttachMenu(false);
-                      imageInputRef.current?.click();
-                    }}
-                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-left hover:bg-violet-50/80 dark:hover:bg-[#161622] text-slate-800 dark:text-slate-200 hover:text-violet-600 dark:hover:text-violet-400 transition cursor-pointer group"
-                  >
-                    <div className="w-8 h-8 rounded-lg bg-violet-500/10 dark:bg-violet-500/20 text-violet-600 dark:text-violet-400 flex items-center justify-center border border-violet-500/25 group-hover:scale-105 transition-transform">
-                      <ImageIcon className="w-4 h-4" />
-                    </div>
-                    <div className="flex flex-col">
-                      <span className="text-xs font-semibold">Upload Image or Screenshot</span>
-                      <span className="text-[11px] text-slate-500 dark:text-slate-400">Reads and explains errors & questions (.png, .jpg, .webp)</span>
-                    </div>
-                  </button>
-
-                  {/* Option 4: Browse All Files */}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowAttachMenu(false);
-                      allInputRef.current?.click();
-                    }}
-                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-left hover:bg-slate-100 dark:hover:bg-[#161622] text-slate-800 dark:text-slate-200 transition cursor-pointer group border-t border-slate-100 dark:border-[#1a1a26] mt-1 pt-2"
-                  >
-                    <div className="w-8 h-8 rounded-lg bg-slate-500/10 dark:bg-slate-500/20 text-slate-600 dark:text-slate-400 flex items-center justify-center border border-slate-500/25 group-hover:scale-105 transition-transform">
-                      <FolderOpen className="w-4 h-4" />
-                    </div>
-                    <div className="flex flex-col">
-                      <span className="text-xs font-semibold">Upload from Computer</span>
-                      <span className="text-[11px] text-slate-500 dark:text-slate-400">Browse any supported document</span>
-                    </div>
-                  </button>
+                  ) : (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => setShowLinkInput(true)}
+                      className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-left text-sm text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-[#1c1c28] transition-colors cursor-pointer"
+                    >
+                      <Link2 className="w-[18px] h-[18px] shrink-0 text-slate-600 dark:text-slate-300" />
+                      <span>Add a link</span>
+                    </button>
+                  )}
                 </div>
               )}
             </div>
@@ -740,7 +792,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSendMessage, onStop, isL
               <button
                 type="submit"
                 disabled={(!input.trim() && !attachments.some((a) => a.status === 'ready' && !!a.text)) || isExtracting}
-                title={isExtracting ? 'Extracting document text...' : 'Send message'}
+                title={isExtracting ? 'Reading your files and links...' : 'Send message'}
                 className="flex items-center justify-center w-8 h-8 rounded-xl bg-gradient-to-r from-orange-600 to-orange-500 hover:from-orange-500 hover:to-orange-400 disabled:opacity-40 disabled:hover:from-orange-600 disabled:hover:to-orange-500 text-white shadow-md shadow-orange-500/30 transition duration-150 disabled:cursor-not-allowed cursor-pointer"
               >
                 {isExtracting ? (
@@ -756,7 +808,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSendMessage, onStop, isL
 
       <div className="text-center mt-2 flex items-center justify-center gap-1.5 flex-wrap">
         <span className="text-[11px] text-slate-400 dark:text-slate-500">
-          Click <strong className="text-orange-500 font-semibold">+</strong> to upload documents or images, or paste a screenshot with <strong className="font-semibold">Ctrl+V</strong>. Clyptus.AI reads it and explains any error or question it shows.
+          Click <strong className="text-orange-500 font-semibold">+</strong> to add files, folders or links (or drop them here, or paste a link or screenshot). Clyptus.AI reads them and answers from them.
         </span>
       </div>
     </div>

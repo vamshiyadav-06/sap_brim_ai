@@ -1,5 +1,7 @@
 import logging
 import uuid
+import hashlib
+import hmac
 from datetime import datetime, timezone
 from typing import Optional
 from pydantic import BaseModel
@@ -38,12 +40,15 @@ from backend.app.security.auth import (
 )
 from backend.app.security.ratelimit import client_ip, rate_limiter
 from backend.app.services import audit_log, languages, token_wallet
+from backend.app.services.security_controls import registration_enabled
 from backend.app.services.evidence_markers import strip_markers
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 logger = logging.getLogger(__name__)
 
 TOO_MANY_ATTEMPTS = "Too many login attempts. Try again later."
+ADMIN_UNLOCK_REQUIRED = "This account is locked after repeated failed sign-in attempts. Ask an administrator for a one-time unlock key."
+INVALID_LOGIN = "Invalid email or password."
 # Shown only after a correct password (docs/ORGANISATION_PORTAL.md, "Authentication and account state").
 ORGANISATION_ACCOUNT_AT_INDIVIDUAL_LOGIN = "This is an organisation account. Sign in through the Organisation Portal."
 INDIVIDUAL_ACCOUNT_AT_ORGANISATION_LOGIN = "Sign in with your individual account at /login."
@@ -56,22 +61,87 @@ SESSION_ENDED = "Your session has ended. Please sign in again."
 REFRESH_REJECTED = "Refresh request rejected."
 
 
-def _guard_login(request: Request, email: str) -> None:
-    """Per-IP login rate and per-account lockout, checked before the password (AUDIT_REPORT F-06)."""
+def _guard_login(request: Request, email: str, db: Session, unlock_key: Optional[str] = None) -> Optional[User]:
+    """Apply the per-IP limit and return a persistently locked account only for key verification."""
     if not rate_limiter.allow("login-ip", client_ip(request), settings.LOGIN_RATE_LIMIT_PER_MINUTE, 60):
         logger.warning("[AUTH] Login throttled: IP rate limit exceeded for client %s", client_ip(request))
         audit_log.record("login", "denied", request=request, target=email, details={"reason": "ip_rate_limit"})
         raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=TOO_MANY_ATTEMPTS)
+    user = db.query(User).filter(User.email == email.strip().lower()).first()
+    if user is not None and user.login_locked_at is not None:
+        if not unlock_key:
+            audit_log.record("login", "denied", request=request, principal=user, details={"reason": "admin_unlock_required"})
+            raise HTTPException(status_code=423, detail=ADMIN_UNLOCK_REQUIRED)
+        return user
     if rate_limiter.account_locked(email):
         logger.warning("[AUTH] Login throttled: account locked for email %s", email)
         audit_log.record("login", "denied", request=request, target=email, details={"reason": "account_lockout"})
-        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=TOO_MANY_ATTEMPTS)
+        detail = INVALID_LOGIN if unlock_key else ADMIN_UNLOCK_REQUIRED
+        raise HTTPException(status_code=423 if not unlock_key else status.HTTP_401_UNAUTHORIZED, detail=detail)
+    return None
+
+
+def _record_login_failure(db: Session, email: str) -> bool:
+    """Persist failures for known accounts so a lock survives restarts and worker changes."""
+    normalized = email.strip().lower()
+    user = db.query(User).filter(User.email == normalized).with_for_update().first()
+    if user is not None and user.login_locked_at is None:
+        user.failed_login_attempts = (user.failed_login_attempts or 0) + 1
+        if user.failed_login_attempts >= max(1, settings.LOGIN_MAX_FAILURES):
+            user.login_locked_at = datetime.now(timezone.utc)
+            user.login_unlock_key_hash = None
+            user.login_unlock_key_expires_at = None
+            audit_log.record("login_account_locked", "denied", target=user.id, details={"reason": "failed_password_limit"})
+        db.commit()
+    rate_limiter.record_login_failure(normalized)
+    return bool((user is not None and user.login_locked_at is not None) or rate_limiter.account_locked(normalized))
+
+
+def _verify_and_consume_unlock_key(
+    db: Session,
+    locked_user: User,
+    password: str,
+    unlock_key: str,
+    *,
+    require_admin: bool = False,
+) -> Optional[User]:
+    """Consume a valid, current key under a row lock, once, for the intended account only."""
+    user = db.query(User).filter(User.id == locked_user.id).with_for_update().first()
+    if user is None or user.login_locked_at is None:
+        return None
+    stored_hash = user.login_unlock_key_hash or ""
+    provided_hash = hashlib.sha256(unlock_key.encode("utf-8")).hexdigest()
+    expiry = user.login_unlock_key_expires_at
+    if expiry is not None and expiry.tzinfo is None:
+        expiry = expiry.replace(tzinfo=timezone.utc)
+    valid = bool(
+        stored_hash
+        and expiry
+        and expiry > datetime.now(timezone.utc)
+        and hmac.compare_digest(stored_hash, provided_hash)
+        and verify_password(password, user.password_hash)
+        and account_is_usable(user)
+        and (not require_admin or user.is_admin)
+    )
+    if not valid:
+        return None
+    user.failed_login_attempts = 0
+    user.login_locked_at = None
+    user.login_unlock_key_hash = None
+    user.login_unlock_key_expires_at = None
+    db.commit()
+    rate_limiter.clear_login_failures(user.email)
+    return user
 
 
 def deny_sign_in(request: Request, action: str, user: User, reason: str, detail: str) -> None:
     """The password was correct but this account may not sign in here. Not a failed guess, so the
     lockout counter is cleared rather than increased."""
     rate_limiter.clear_login_failures(user.email)
+    user.failed_login_attempts = 0
+    user.login_locked_at = None
+    user.login_unlock_key_hash = None
+    user.login_unlock_key_expires_at = None
     logger.warning("security_event login_denied reason=%s", reason)
     audit_log.record(action, "denied", request=request, principal=user, details={"reason": reason})
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=detail)
@@ -92,6 +162,10 @@ def issue_login_token(request: Request, action: str, user: User, db: Session, re
     """Successful sign-in: clear the lockout counter, record last_login_at, audit, start a refresh-token
     family (HttpOnly cookie on `response`) and issue an access token."""
     rate_limiter.clear_login_failures(user.email)
+    user.failed_login_attempts = 0
+    user.login_locked_at = None
+    user.login_unlock_key_hash = None
+    user.login_unlock_key_expires_at = None
     token_wallet.refill_if_due(db, user)
     user.last_login_at = datetime.now(timezone.utc)
     db.commit()  # expired attributes reload on access below
@@ -115,7 +189,7 @@ def _registration_rejected(request: Request) -> HTTPException:
 def register(user_in: UserRegister, request: Request, db: Session = Depends(get_db)):
     # Individuals sign up directly, with no code; organisations use activation codes (AUDIT_REPORT F-01).
     # The only gate is the operator's emergency switch.
-    if not settings.REGISTRATION_ENABLED:
+    if not registration_enabled(db):
         audit_log.record("register", "denied", request=request, details={"reason": "registration_disabled"})
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
                             detail="Sign-up is temporarily unavailable. Please try again later.")
@@ -149,14 +223,29 @@ def register(user_in: UserRegister, request: Request, db: Session = Depends(get_
     # so the session starts at /login with its rate limit, lockout and audit trail.
     return UserResponse.model_validate(new_user)
 
+
+@router.get("/registration-status")
+def get_registration_status(db: Session = Depends(get_db)):
+    """Public UI hint; `/register` independently enforces the same server-side setting."""
+    return {"registration_enabled": registration_enabled(db)}
+
 @router.post("/login", response_model=Token)
 def login(login_data: UserLogin, request: Request, response: Response, db: Session = Depends(get_db)):
-    _guard_login(request, login_data.email)
-    user = authenticate_user(db, login_data.email, login_data.password)
+    locked_user = _guard_login(request, login_data.email, db, login_data.unlock_key)
+    if locked_user is not None:
+        unlocked = _verify_and_consume_unlock_key(db, locked_user, login_data.password, login_data.unlock_key or "")
+        if unlocked is None:
+            audit_log.record("login", "failure", request=request, principal=locked_user, details={"reason": "invalid_unlock_key_or_password"})
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=INVALID_LOGIN)
+        user = unlocked
+    else:
+        user = authenticate_user(db, login_data.email, login_data.password)
     if not user:
-        rate_limiter.record_login_failure(login_data.email)
-        logger.warning("[AUTH] Login failed: invalid credentials for email=%s", login_data.email)
+        locked = _record_login_failure(db, login_data.email)
+        logger.warning("[AUTH] Login failed: invalid credentials")
         audit_log.record("login", "failure", request=request, target=login_data.email.lower())
+        if locked:
+            raise HTTPException(status_code=423, detail=ADMIN_UNLOCK_REQUIRED)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",
@@ -169,21 +258,34 @@ def login(login_data: UserLogin, request: Request, response: Response, db: Sessi
 
 @router.post("/admin-login", response_model=Token)
 def admin_login(login_data: UserLogin, request: Request, response: Response, db: Session = Depends(get_db)):
-    _guard_login(request, login_data.email)
-    user = authenticate_user(db, login_data.email, login_data.password)
+    locked_user = _guard_login(request, login_data.email, db, login_data.unlock_key)
+    if locked_user is not None:
+        user = _verify_and_consume_unlock_key(
+            db, locked_user, login_data.password, login_data.unlock_key or "", require_admin=True
+        )
+        if user is None:
+            audit_log.record("admin_login", "failure", request=request, target=login_data.email.lower(),
+                             details={"reason": "invalid_unlock_key_or_password"})
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=INVALID_LOGIN)
+    else:
+        user = authenticate_user(db, login_data.email, login_data.password)
     if not user:
-        rate_limiter.record_login_failure(login_data.email)
-        logger.warning("[AUTH] Admin login failed: invalid credentials or unauthorized user email=%s", login_data.email)
+        locked = _record_login_failure(db, login_data.email)
+        logger.warning("[AUTH] Admin login failed: invalid credentials or unauthorized user")
         audit_log.record("admin_login", "failure", request=request, target=login_data.email.lower())
+        if locked:
+            raise HTTPException(status_code=423, detail=ADMIN_UNLOCK_REQUIRED)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
     if not user.is_admin:
-        rate_limiter.record_login_failure(login_data.email)
-        logger.warning("[AUTH] Admin login failed: invalid credentials or unauthorized user email=%s", login_data.email)
+        locked = _record_login_failure(db, login_data.email)
+        logger.warning("[AUTH] Admin login failed: invalid credentials or unauthorized user")
         audit_log.record("admin_login", "denied", request=request, principal=user, details={"reason": "not_admin"})
+        if locked:
+            raise HTTPException(status_code=423, detail=ADMIN_UNLOCK_REQUIRED)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",

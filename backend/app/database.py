@@ -53,6 +53,7 @@ def create_db_engine(url: str = None):
         pool_pre_ping=True,
         pool_size=settings.DATABASE_POOL_SIZE,
         max_overflow=settings.DATABASE_MAX_OVERFLOW,
+        pool_timeout=settings.DATABASE_POOL_TIMEOUT,
         pool_recycle=1800,
         # SQL errors and engine logs never carry bound values (password hashes, e-mails, chat text).
         hide_parameters=True,

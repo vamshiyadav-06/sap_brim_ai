@@ -274,7 +274,8 @@ class EvidenceSelectionService:
         query: str,
         internal_candidates: List[Dict[str, Any]],
         external_candidates: List[Dict[str, Any]],
-        internal_confidence_data: Dict[str, Any]
+        internal_confidence_data: Dict[str, Any],
+        max_internal_passages: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Selects the strongest sufficient evidence set among:
@@ -317,7 +318,7 @@ class EvidenceSelectionService:
         internal_top_k = (
             min(16, max(settings.RERANK_TOP_K, len(internal_confidence_data.get("aspects", [])) * 2, 8))
             if has_multiple_aspects
-            else settings.RERANK_TOP_K
+            else max(settings.RERANK_TOP_K, max_internal_passages or settings.RERANK_TOP_K)
         )
 
         # Decision Logic:

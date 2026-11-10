@@ -46,10 +46,10 @@ interface AuthContextType {
   user: User | null;
   token: string | null;
   loading: boolean;
-  login: (email: string, password: string) => Promise<void>;
-  adminLogin: (email: string, password: string) => Promise<void>;
+  login: (email: string, password: string, unlockKey?: string) => Promise<void>;
+  adminLogin: (email: string, password: string, unlockKey?: string) => Promise<void>;
   /** Organisation accounts sign in through the Organisation Portal. */
-  orgLogin: (email: string, password: string) => Promise<User>;
+  orgLogin: (email: string, password: string, unlockKey?: string) => Promise<User>;
   /** Stores a session returned by activation or a password change (the server revoked the old token). */
   applySession: (session: AuthTokenResponse) => User;
   register: (name: string, email: string, password: string) => Promise<void>;
@@ -174,9 +174,10 @@ export const AuthProvider: React.FC<{
 
   const login = async (
     email: string,
-    password: string
+    password: string,
+    unlockKey?: string,
   ): Promise<void> => {
-    const data = await apiLogin(email, password);
+    const data = await apiLogin(email, password, unlockKey);
 
     setStoredToken(data.access_token);
     setToken(data.access_token);
@@ -189,9 +190,10 @@ export const AuthProvider: React.FC<{
 
   const adminLogin = async (
     email: string,
-    password: string
+    password: string,
+    unlockKey?: string,
   ): Promise<void> => {
-    const data = await apiAdminLogin(email, password);
+    const data = await apiAdminLogin(email, password, unlockKey);
 
     setStoredToken(data.access_token);
     setToken(data.access_token);
@@ -214,8 +216,8 @@ export const AuthProvider: React.FC<{
     return enrichedUser;
   };
 
-  const orgLogin = async (email: string, password: string): Promise<User> => {
-    const data = await apiOrgLogin(email, password);
+  const orgLogin = async (email: string, password: string, unlockKey?: string): Promise<User> => {
+    const data = await apiOrgLogin(email, password, unlockKey);
     return applySession(data);
   };
 

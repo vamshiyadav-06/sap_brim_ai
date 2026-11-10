@@ -2,7 +2,7 @@ import React from 'react';
 
 export const OUT_OF_TOKENS_MESSAGE = 'You have used all your tokens.';
 /** The allowance every account is topped back up to (backend TOKEN_ALLOWANCE). */
-export const TOKEN_ALLOWANCE = 1000;
+export const TOKEN_ALLOWANCE = 100;
 
 export interface TokenWallet {
   balance: number;

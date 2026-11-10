@@ -116,25 +116,25 @@ export function IndividualUsersAdminPanel({ currentUserId }: { currentUserId?: s
           </h2>
           <p>Individual accounts only. Organisation members are managed by their organisation administrators.</p>
         </div>
-        <div className="org-row-actions">
-          <button type="button" className="org-btn" onClick={() => setCreating((v) => !v)}>
-            <Plus size={14} aria-hidden="true" /> Create user
-          </button>
+        <div className="org-app-actions">
           <button type="button" className="org-btn" onClick={() => setReloadCount((n) => n + 1)}>
             <RefreshCw size={14} aria-hidden="true" /> Refresh
+          </button>
+          <button type="button" className="org-btn org-btn-primary" aria-expanded={creating} onClick={() => setCreating((v) => !v)}>
+            <Plus size={14} aria-hidden="true" /> Create user
           </button>
         </div>
       </div>
 
       {creating && (
-        <form className="org-toolbar" style={{ marginBottom: 14, flexWrap: 'wrap', gap: 8 }} onSubmit={createUser} noValidate>
-          <input aria-label="New user name" placeholder="Full name" value={form.name} maxLength={100}
+        <form className="org-toolbar org-inline-form" style={{ marginBottom: 14 }} onSubmit={createUser} noValidate>
+          <input className="org-input" aria-label="New user name" placeholder="Full name" value={form.name} maxLength={100}
             onChange={(e) => setForm({ ...form, name: e.target.value })} />
-          <input aria-label="New user email" type="email" placeholder="Email" value={form.email} autoComplete="off"
+          <input className="org-input" aria-label="New user email" type="email" placeholder="Email" value={form.email} autoComplete="off"
             onChange={(e) => setForm({ ...form, email: e.target.value })} />
-          <input aria-label="New user password" type="password" placeholder="Password (8+ characters)" value={form.password}
+          <input className="org-input" aria-label="New user password" type="password" placeholder="Password (8+ characters)" value={form.password}
             autoComplete="new-password" maxLength={72} onChange={(e) => setForm({ ...form, password: e.target.value })} />
-          <button type="submit" className="org-btn" disabled={createBusy}>
+          <button type="submit" className="org-btn org-btn-primary" disabled={createBusy}>
             {createBusy ? 'Creating…' : 'Create account'}
           </button>
           {createError && (

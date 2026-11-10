@@ -34,7 +34,7 @@ const brimAreas = [
   { abbreviation: 'SAP', title: 'S/4HANA and the wider SAP landscape around BRIM', icon: Compass },
 ];
 
-// The High-mode pipeline, in the order the backend runs it.
+// The RAG Pipeline, in the order the backend runs it.
 const pipelineSteps: Array<[string, string, React.ReactNode, React.ComponentType<{ size?: number }>]> = [
   ['01', 'Route', <><strong>Query routing</strong> and an SAP scope check; follow-ups are resolved against the conversation.</>, Route],
   ['02', 'Retrieve', <><strong>Hybrid search</strong>: dense vector embeddings, BM25 keyword ranking and exact SAP identifier matching.</>, Search],
@@ -47,8 +47,8 @@ const pipelineSteps: Array<[string, string, React.ReactNode, React.ComponentType
 const modes = [
   {
     id: 'sprint',
-    name: 'Low',
-    tagline: 'Fast, direct answers (the default)',
+    name: 'Direct LLM',
+    tagline: 'Fast, direct answers on demand',
     icon: Zap,
     points: [
       'Answers straight from the language model, streamed as it is written',
@@ -60,8 +60,8 @@ const modes = [
   },
   {
     id: 'scholar',
-    name: 'High',
-    tagline: 'Researched, verified answers (switch on with the High button)',
+    name: 'RAG Pipeline',
+    tagline: 'Researched, verified answers (the default)',
     icon: BookOpenCheck,
     points: [
       'Retrieves from an administrator-curated SAP knowledge base before answering',
@@ -147,8 +147,8 @@ export const LandingPage: React.FC = () => {
             </h1>
             <p className="hero-description">
               <strong>Clyptus.AI</strong> helps SAP consultants and architects work through <strong>SAP BRIM</strong>:
-              quick answers in <strong>Low</strong> by default, or researched answers when you switch on <strong>High</strong>, retrieved from curated SAP documentation and
-              <strong>verified claim by claim</strong>.
+              researched answers in the <strong>RAG Pipeline</strong> by default, or quick answers when you switch to
+              <strong>Direct LLM</strong>, using the configured language model directly. RAG answers are <strong>verified claim by claim</strong>.
             </p>
             <div className="hero-actions">
               <Link className="button button-brand" to="/login">
@@ -174,7 +174,7 @@ export const LandingPage: React.FC = () => {
             <div className="video-supporting-copy">
               <strong>See Clyptus.AI in action</strong>
               <p>
-                Ask in plain language. <strong>High</strong> retrieves the relevant SAP knowledge, checks the draft
+                Ask in plain language. The <strong>RAG Pipeline</strong> retrieves relevant SAP knowledge, checks the draft
                 against it, and streams the <strong>verified answer</strong>.
               </p>
             </div>
@@ -209,7 +209,7 @@ export const LandingPage: React.FC = () => {
               guesses at these; Clyptus.AI looks them up.
             </p>
             <p>
-              In High mode, <strong>retrieval-augmented generation (RAG)</strong> finds the relevant documentation
+              The <strong>RAG Pipeline</strong> finds the relevant documentation
               before the model answers, and a <strong>grounding check</strong> rejects statements the evidence does not
               support. That greatly reduces invented settings and transaction codes.
             </p>
@@ -224,11 +224,11 @@ export const LandingPage: React.FC = () => {
           <div className="features-heading">
             <div>
               <span className="eyebrow">ONE BUTTON, TWO WAYS TO ASK</span>
-              <h2>Low for speed.<br /><span>High for depth.</span></h2>
+              <h2>RAG Pipeline for depth.<br /><span>Direct LLM for speed.</span></h2>
             </div>
             <p>
-              Every chat starts in <strong>Low</strong>. Press the <strong>High ↑</strong> button in the chat box for
-              verified answers, and press it again to return to Low. <strong>Both stay within SAP topics</strong> and
+              Every chat starts with the <strong>RAG Pipeline</strong>. Press <strong>High</strong> in the chat box to switch to
+              a direct model response. <strong>Both stay within SAP topics</strong> and
               remember what you discussed earlier in the conversation.
             </p>
           </div>
@@ -324,7 +324,7 @@ export const LandingPage: React.FC = () => {
             <span className="eyebrow">VERIFIED BEFORE YOU SEE IT</span>
             <h2>Don't just get an answer.<br /><span>Get one that was checked.</span></h2>
             <p>
-              High holds the draft back until <strong>grounding verification</strong> has checked it. Unsupported claims are
+              The RAG Pipeline holds the draft back until <strong>grounding verification</strong> has checked it. Unsupported claims are
               repaired or removed first, and anything that still cannot be confirmed is labelled. Source documents are <strong>curated and access-controlled by your
               administrators</strong>, and they are never exposed in the chat.
             </p>
@@ -339,7 +339,7 @@ export const LandingPage: React.FC = () => {
               <span className="eyebrow">WHEN THE EVIDENCE ISN'T THERE</span>
               <h2>No verified answer?<br /><span>Clyptus.AI says so.</span></h2>
               <p>
-                If the retrieved documentation does not support a claim, High <strong>removes it</strong> instead of
+                If the retrieved documentation does not support a claim, the RAG Pipeline <strong>removes it</strong> instead of
                 inventing settings, tables or transaction codes, and tells you what it could not confirm.
               </p>
               <div className="boundary-example">
@@ -424,7 +424,7 @@ export const LandingPage: React.FC = () => {
                 <span className="story-badge">THE CLYPTUS APPROACH</span>
                 <h3>Evidence before generation</h3>
                 <p>
-                  In High mode, every question goes through hybrid retrieval (dense embeddings, BM25 keyword ranking and
+                  In the RAG Pipeline, every question goes through hybrid retrieval (dense embeddings, BM25 keyword ranking and
                   exact SAP identifier matching) before the model writes anything. The draft is then verified claim by
                   claim. If the evidence does not support it, the system says so instead of guessing.
                 </p>
@@ -460,7 +460,7 @@ export const LandingPage: React.FC = () => {
             <div className="about-stats-band">
               <div className="stat-box">
                 <strong>2 modes</strong>
-                <span>Low by default, High on demand</span>
+                <span>RAG Pipeline by default, Direct LLM on demand</span>
               </div>
               <div className="stat-box">
                 <strong>5 BRIM</strong>
@@ -506,7 +506,7 @@ export const LandingPage: React.FC = () => {
             <span className="eyebrow">READY TO EXPLORE SAP?</span>
             <h2>Have an SAP question?<br /><span>Ask Clyptus.AI.</span></h2>
             <p>
-              Get <strong>fast answers in Low</strong> or switch on <strong>High</strong> for <strong>verified answers</strong>, across
+              Get <strong>verified answers from the RAG Pipeline</strong> by default or switch to <strong>Direct LLM</strong>, across
               <strong> SAP and SAP BRIM</strong>.
             </p>
 

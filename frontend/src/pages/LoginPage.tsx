@@ -5,27 +5,38 @@ import { BrandLogo } from '../components/navbar/BrandLogo';
 import { LoginVisual } from '../components/auth/LoginVisual';
 import { PageMeta } from '../components/ui/PageMeta';
 import { useAuth } from '../context/AuthContext';
+import { ApiError, apiGetRegistrationStatus } from '../services/api';
 
 // Mirrors the backend UserRegister schema (backend/app/schemas/auth.py).
 const PASSWORD_MIN = 8;
 const PASSWORD_MAX = 72;
-const PUBLIC_REGISTRATION_ENABLED = import.meta.env.VITE_REGISTRATION_ENABLED?.toLowerCase() === 'true';
-
 export const LoginPage: React.FC = () => {
   const { user, login, register } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
 
-  const [mode, setMode] = useState<'login' | 'register'>(() => {
-    return PUBLIC_REGISTRATION_ENABLED && searchParams.get('mode') === 'register' ? 'register' : 'login';
-  });
+  const [mode, setMode] = useState<'login' | 'register'>('login');
+  const [registrationEnabled, setRegistrationEnabled] = useState(false);
+  const [unlockRequired, setUnlockRequired] = useState(false);
+  const [unlockKey, setUnlockKey] = useState('');
+
+  useEffect(() => {
+    let active = true;
+    apiGetRegistrationStatus()
+      .then(({ registration_enabled }) => {
+        if (!active) return;
+        setRegistrationEnabled(registration_enabled);
+        if (registration_enabled && searchParams.get('mode') === 'register') setMode('register');
+      })
+      .catch(() => { if (active) setRegistrationEnabled(false); });
+    return () => { active = false; };
+  }, []);
 
   useEffect(() => {
     const urlMode = searchParams.get('mode');
-    if (urlMode === 'login' || (PUBLIC_REGISTRATION_ENABLED && urlMode === 'register')) {
-      setMode(urlMode);
-    }
-  }, [searchParams]);
+    if (urlMode === 'login') setMode('login');
+    if (registrationEnabled && urlMode === 'register') setMode('register');
+  }, [searchParams, registrationEnabled]);
 
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -49,6 +60,8 @@ export const LoginPage: React.FC = () => {
     setMode(next);
     setError(null);
     setShowPassword(false);
+    setUnlockRequired(false);
+    setUnlockKey('');
     // The "Account created" note belongs to the moment after sign-up only.
     if (searchParams.has('created')) navigate(`/login?mode=${next}`, { replace: true });
   };
@@ -60,17 +73,17 @@ export const LoginPage: React.FC = () => {
 
     try {
       if (mode === 'login') {
-        await login(email.trim(), password);
+        await login(email.trim(), password, unlockKey.trim() || undefined);
         navigate('/app', { replace: true });
       } else {
         if (!name.trim()) throw new Error('Please enter your full name');
         await register(name.trim(), email.trim(), password);
-        // The account exists but no session does: switch to Sign In with the e-mail kept.
-        setPassword('');
-        setShowPassword(false);
-        navigate('/login?mode=login&created=1', { replace: true });
+        // A registration-enabled user can start using the chatbot immediately.
+        await login(email.trim(), password);
+        navigate('/app', { replace: true });
       }
     } catch (err: any) {
+      if (err instanceof ApiError && err.status === 423) setUnlockRequired(true);
       setError(err.message || 'Authentication failed. Please verify your credentials.');
     } finally {
       setLoading(false);
@@ -92,7 +105,7 @@ export const LoginPage: React.FC = () => {
               <ShieldCheck size={22} strokeWidth={2} />
             </span>
             <blockquote>
-              “Your conversations stay private to your account, and every High answer is checked
+              “Your conversations stay private to your account, and every RAG Pipeline answer is checked
               against SAP documentation before you see it.”
             </blockquote>
             <figcaption>Private by default · Verified by design</figcaption>
@@ -110,7 +123,7 @@ export const LoginPage: React.FC = () => {
               <h1>{isRegister ? 'Create your account' : 'Welcome back'}</h1>
               <p>{isRegister ? 'Start asking SAP BRIM questions in minutes.' : 'Sign in to your Clyptus.AI workspace.'}</p>
 
-              {PUBLIC_REGISTRATION_ENABLED && <div className="auth-tabs" role="tablist" aria-label="Account">
+              {registrationEnabled && <div className="auth-tabs" role="tablist" aria-label="Account">
                 <button
                   type="button"
                   role="tab"
@@ -214,6 +227,25 @@ export const LoginPage: React.FC = () => {
                     </small>
                   )}
                 </div>
+
+                {!isRegister && unlockRequired && (
+                  <div className="auth-field">
+                    <label htmlFor="auth-unlock-key">Admin unlock key</label>
+                    <div className="auth-input">
+                      <ShieldCheck aria-hidden="true" />
+                      <input
+                        id="auth-unlock-key"
+                        type="text"
+                        required
+                        autoComplete="one-time-code"
+                        value={unlockKey}
+                        onChange={(e) => setUnlockKey(e.target.value)}
+                        placeholder="Enter the one-time key from your administrator"
+                      />
+                    </div>
+                    <small className="auth-hint">Ask your administrator for a one-time unlock key.</small>
+                  </div>
+                )}
 
                 <button type="submit" disabled={loading} className="button button-brand auth-submit">
                   <span>{loading ? (isRegister ? 'Creating account…' : 'Signing in…') : isRegister ? 'Create account' : 'Sign in'}</span>

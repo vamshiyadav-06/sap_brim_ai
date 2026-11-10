@@ -6,7 +6,7 @@ import { PublicNav } from '../components/navbar/PublicNav';
 import { PageMeta } from '../components/ui/PageMeta';
 
 const items = [
-  [Sparkles, 'Low by default, High on demand', 'Every chat starts in Low with fast, direct answers. Press the High button to have the answer researched from the SAP knowledge base and verified before it is shown; press it again to go back to Low.'],
+  [Sparkles, 'RAG Pipeline by default, Direct LLM on demand', 'Every chat starts with the RAG Pipeline, which researches the SAP knowledge base and verifies the answer before it is shown. Press High for a direct response from the configured model.'],
   [Search, 'Hybrid retrieval', 'Dense vector embeddings, BM25 keyword ranking and exact SAP identifier matching, merged with reciprocal rank fusion.'],
   [Boxes, 'SAP BRIM focus', 'Subscription Order Management, Convergent Charging, Convergent Invoicing, FI-CA and Convergent Mediation.'],
   [MessageCircle, 'Conversation memory', 'Follow-ups are resolved against the last 20 messages, a running summary of older turns, and recall of earlier questions.'],

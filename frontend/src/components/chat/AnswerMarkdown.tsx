@@ -2,6 +2,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { markHtmlBreaks, remarkHtmlBreaks } from './htmlBreaks';
 import { repairCollapsedMarkdown } from './repairMarkdown';
+import { GeneratedFileLink, generatedFileId } from './GeneratedFileLink';
 
 /**
  * Renders an answer's Markdown the way the chat does: images suppressed (F-10), only http(s)/mailto
@@ -15,6 +16,11 @@ export function AnswerMarkdown({ content }: { content: string }) {
       components={{
         img: () => null,
         a: ({ href, children }) => {
+          const fileId = generatedFileId(href);
+          if (fileId) {
+            const filename = (Array.isArray(children) ? children.join('') : String(children ?? '')).trim() || 'document';
+            return <GeneratedFileLink fileId={fileId} filename={filename} />;
+          }
           const safe = href && /^(https?:|mailto:)/i.test(href);
           return safe ? <a href={href} target="_blank" rel="noopener noreferrer nofollow">{children}</a> : <>{children}</>;
         },

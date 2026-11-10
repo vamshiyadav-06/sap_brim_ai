@@ -54,6 +54,11 @@ describe('AdminDashboard account management tabs', () => {
     expect(html).not.toContain('documents tab');
   });
 
+  it('shows the new-user sign-in control in the top navigation without opening System', () => {
+    expect(html).toContain('aria-label="Enable new user sign-in"');
+    expect(html).toContain('Loading sign-up…');
+  });
+
   it('offers the status filter for organisations', () => {
     for (const status of ['All', 'Requested', 'Pending activation', 'Active', 'Suspended', 'Deactivated', 'Rejected']) {
       expect(html).toMatch(new RegExp(`aria-pressed="(true|false)">${status}</button>`));

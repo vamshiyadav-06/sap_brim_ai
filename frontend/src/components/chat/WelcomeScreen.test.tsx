@@ -2,20 +2,28 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { WelcomeScreen } from './WelcomeScreen';
 import { MODES, SUGGESTIONS } from './welcomeContent';
-import type { ChatMode } from '../../types';
+import { DEFAULT_CHAT_MODE, type ChatMode } from '../../types';
+import { nextChatMode } from './ModeToggle';
 
 const render = (mode: ChatMode) =>
   renderToStaticMarkup(<WelcomeScreen mode={mode} onModeChange={() => {}} onSelectPrompt={() => {}} />);
 
 describe('WelcomeScreen', () => {
-  it('has a single High button that is pressed only in High mode', () => {
-    const high = render('scholar');
-    const low = render('sprint');
+  it('has a High button that is off by default in the RAG Pipeline mode', () => {
+    const rag = render('scholar');
+    const direct = render('sprint');
 
-    expect(high.match(/<button[^>]*aria-label="High mode"/g)).toHaveLength(1);
-    expect(high).toContain('aria-pressed="true"');
-    expect(low).toContain('aria-pressed="false"');
-    expect(low).not.toContain('>Low</button>');
+    expect(rag.match(/<button[^>]*aria-label="High mode"/g)).toHaveLength(1);
+    expect(rag).toContain('aria-pressed="false"');
+    expect(direct).toContain('aria-pressed="true"');
+    expect(rag).toContain('RAG Pipeline is the default');
+    expect(direct).toContain('High is on');
+  });
+
+  it('defaults to the RAG Pipeline and toggles between the existing routes', () => {
+    expect(DEFAULT_CHAT_MODE).toBe('scholar');
+    expect(nextChatMode(DEFAULT_CHAT_MODE)).toBe('sprint');
+    expect(nextChatMode('sprint')).toBe('scholar');
   });
 
   it.each<ChatMode>(['sprint', 'scholar'])('shows the %s suggestions only', (mode) => {
@@ -29,12 +37,12 @@ describe('WelcomeScreen', () => {
   });
 
   it('sets SAP-only expectations and explains both modes', () => {
-    const html = render('sprint');
+    const html = render('scholar');
 
     expect(html).not.toContain('Ask any question');
     expect(html).toContain('SAP BRIM');
-    expect(html).toContain(MODES[0].detail); // the chosen mode is explained under the switch
-    expect(render('scholar')).toContain(MODES[1].detail);
+    expect(html).toContain(MODES.find((mode) => mode.id === 'scholar')!.detail);
+    expect(render('sprint')).toContain(MODES.find((mode) => mode.id === 'sprint')!.detail);
     expect(html).toContain('AI answers can contain mistakes');
   });
 

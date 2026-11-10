@@ -22,7 +22,9 @@ for key in ('APP_DOMAIN', 'ALLOWED_ORIGINS', 'SUPER_ADMIN_EMAIL', 'SUPER_ADMIN_P
             'STAGING_BASIC_AUTH_HASH'):
     if not values.get(key) or 'change-me' in values[key].lower() or 'example.com' in values[key].lower():
         bad.append(key)
-if not any(values.get(k) for k in ('GROQ_API_KEY', 'GEMINI_API_KEY', 'OPENROUTER_API_KEY')):
+provider_keys = [f'{p}_API_KEY' + s for p in ('GROQ', 'GEMINI', 'OPENROUTER')
+                 for s in ('', '_FALLBACK_1', '_FALLBACK_2', '_FALLBACK_3')]
+if not any(values.get(k) for k in provider_keys):
     bad.append('LLM provider key')
 if bad:
     raise SystemExit('Staging configuration is incomplete or unsafe: ' + ', '.join(sorted(set(bad))))

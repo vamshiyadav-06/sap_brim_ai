@@ -114,10 +114,13 @@ async def stream_processing_progress(
         )
 
     async def event_generator():
-        q = document_processing_service.subscribe()
+        # The service uses a threading.Lock shared with the processing worker. Keep all
+        # lock-taking calls off the event loop, including disconnect cleanup.
+        loop = asyncio.get_running_loop()
+        q = await asyncio.to_thread(document_processing_service.subscribe, loop)
         try:
             # Send immediate state on connect
-            init_state = document_processing_service.get_progress_status()
+            init_state = await asyncio.to_thread(document_processing_service.get_progress_status)
             yield f"data: {json.dumps(init_state)}\n\n"
             while True:
                 try:
@@ -129,7 +132,7 @@ async def stream_processing_progress(
         except asyncio.CancelledError:
             pass
         finally:
-            document_processing_service.unsubscribe(q)
+            await asyncio.to_thread(document_processing_service.unsubscribe, q)
 
     return StreamingResponse(
         event_generator(),

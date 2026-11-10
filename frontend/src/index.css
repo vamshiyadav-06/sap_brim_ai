@@ -784,7 +784,7 @@ h1,h2,h3,p{margin-top:0}
 .brim-card{min-height:177px}
 .brim-abbreviation{display:block;margin-top:17px;color:var(--orange-text);font-size:10px;font-weight:700;letter-spacing:.1em}
 .brim-card h3{margin-top:7px}
-/* Low / High mode cards */
+/* RAG Pipeline / Direct LLM mode cards */
 .feature-grid-two{grid-template-columns:repeat(2,1fr)}
 .mode-card{min-height:0;padding:30px}
 .mode-card h3{font-size:19px}

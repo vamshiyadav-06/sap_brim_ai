@@ -316,10 +316,312 @@ def extract_from_image(filename: str, file_bytes: bytes, file_type: str = "image
         raise ValueError(f"Could not read text from image '{Path(filename).name}': {exc}") from exc
 
 
+# ---------------------------------------------------------------------------------------------------------
+# Office / OpenDocument / HTML / RTF / archives. Parsed directly from their XML, so no extra dependencies;
+# every archive is size-checked before anything is read (zip bombs), and XML is parsed without entities.
+# ---------------------------------------------------------------------------------------------------------
+
+MAX_ZIP_UNCOMPRESSED_BYTES = 60 * 1024 * 1024
+MAX_ZIP_MEMBERS = 5000
+MAX_ARCHIVE_FILES_READ = 30
+MAX_SHEET_ROWS = 3000
+TRUNCATION_MARKER = "\n\n[Document content truncated to fit token limits]"
+
+# Old binary Office formats cannot be read without heavy converters; the message tells the user what to do.
+LEGACY_BINARY_OFFICE = {"doc", "ppt", "xls"}
+
+# Read as plain text without sniffing: documents, data, configuration, logs and source code.
+TEXT_EXTENSIONS = {
+    "txt", "md", "markdown", "rst", "csv", "tsv", "json", "jsonl", "log", "xml", "sql", "yaml", "yml", "toml",
+    "ini", "cfg", "conf", "properties", "env", "tex", "srt", "vtt", "diff", "patch",
+    "py", "js", "jsx", "ts", "tsx", "java", "kt", "c", "h", "cpp", "hpp", "cs", "go", "rs", "rb", "php", "swift",
+    "sh", "bat", "ps1", "r", "scala", "lua", "pl", "abap", "css", "scss", "vue",
+}
+
+_A_NS = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
+_S_NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+_R_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+
+
+def _finish(filename: str, ext: str, file_bytes: bytes, text: str, pages: Optional[List[Dict[str, Any]]] = None,
+            page_count: Optional[int] = None) -> Dict[str, Any]:
+    """The common extraction result: cleaned, length-capped text with preview and page metadata."""
+    text = clean_extracted_text(text)
+    if len(text) > MAX_CHARACTERS_PER_DOCUMENT:
+        text = text[:MAX_CHARACTERS_PER_DOCUMENT - len(TRUNCATION_MARKER)] + TRUNCATION_MARKER
+    return {
+        "filename": Path(filename).name,
+        "file_type": ext,
+        "size_bytes": len(file_bytes),
+        "page_count": page_count if page_count is not None else (len(pages) if pages else max(1, len(text.splitlines()) // 45)),
+        "char_count": len(text),
+        "preview": text[:300].strip() + ("..." if len(text) > 300 else ""),
+        "text": text,
+        "pages": pages or [],
+    }
+
+
+def _open_zip(file_bytes: bytes, kind: str):
+    import zipfile
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(file_bytes))
+    except zipfile.BadZipFile as exc:
+        raise ValueError(f"This is not a valid {kind} file.") from exc
+    members = archive.infolist()
+    if len(members) > MAX_ZIP_MEMBERS or sum(m.file_size for m in members) > MAX_ZIP_UNCOMPRESSED_BYTES:
+        raise ValueError(f"This {kind} file is too large to read once unpacked.")
+    return archive
+
+
+def _xml(archive, name: str):
+    from lxml import etree
+    parser = etree.XMLParser(resolve_entities=False, no_network=True, huge_tree=False)
+    return etree.fromstring(archive.read(name), parser=parser)
+
+
+def _local(tag: Any) -> str:
+    return tag.rsplit("}", 1)[-1] if isinstance(tag, str) else ""
+
+
+def _number(name: str) -> int:
+    match = re.search(r"(\d+)\.xml$", name)
+    return int(match.group(1)) if match else 0
+
+
+def _paragraphs(root, ns: str = _A_NS) -> List[str]:
+    lines = []
+    for paragraph in root.iter(f"{ns}p"):
+        text = "".join(t.text or "" for t in paragraph.iter(f"{ns}t")).strip()
+        if text:
+            lines.append(text)
+    return lines
+
+
+def extract_from_pptx(filename: str, file_bytes: bytes) -> Dict[str, Any]:
+    """PowerPoint: the text of every slide (titles, text boxes, tables) plus its speaker notes."""
+    try:
+        archive = _open_zip(file_bytes, "PowerPoint")
+        slides = sorted((n for n in archive.namelist() if re.fullmatch(r"ppt/slides/slide\d+\.xml", n)), key=_number)
+        if not slides:
+            raise ValueError("No slides were found in this PowerPoint file.")
+        blocks, pages = [], []
+        for index, name in enumerate(slides, 1):
+            lines = _paragraphs(_xml(archive, name))
+            notes_name = f"ppt/notesSlides/notesSlide{_number(name)}.xml"
+            notes = _paragraphs(_xml(archive, notes_name)) if notes_name in archive.namelist() else []
+            notes = [n for n in notes if not n.isdigit()]  # the slide-number placeholder
+            body = "\n".join(lines)
+            if notes:
+                body += "\n[Speaker notes]\n" + "\n".join(notes)
+            body = clean_extracted_text(body)
+            pages.append({"page": index, "text": body, "char_count": len(body)})
+            if body:
+                blocks.append(f"--- Slide {index} ---\n{body}")
+        return _finish(filename, "pptx", file_bytes, "\n\n".join(blocks), pages, page_count=len(slides))
+    except ValueError:
+        raise
+    except Exception as exc:
+        logger.warning("PPTX extraction failed for document_ref=%s (%s)", privacy_fingerprint(filename), type(exc).__name__)
+        raise ValueError(f"Failed to extract text from PowerPoint file '{Path(filename).name}'.") from exc
+
+
+def _column_index(reference: str) -> int:
+    letters = re.match(r"[A-Za-z]+", reference or "")
+    index = 0
+    for char in (letters.group(0).upper() if letters else ""):
+        index = index * 26 + (ord(char) - 64)
+    return max(index - 1, 0)
+
+
+def extract_from_xlsx(filename: str, file_bytes: bytes, ext: str = "xlsx") -> Dict[str, Any]:
+    """Excel: every worksheet as rows of cell values (shared strings resolved)."""
+    try:
+        archive = _open_zip(file_bytes, "Excel")
+        names = set(archive.namelist())
+        shared: List[str] = []
+        if "xl/sharedStrings.xml" in names:
+            shared = ["".join(t.text or "" for t in si.iter(f"{_S_NS}t")) for si in _xml(archive, "xl/sharedStrings.xml").iter(f"{_S_NS}si")]
+        targets: Dict[str, str] = {}
+        if "xl/_rels/workbook.xml.rels" in names:
+            for rel in _xml(archive, "xl/_rels/workbook.xml.rels"):
+                target = rel.get("Target", "")
+                targets[rel.get("Id", "")] = target.lstrip("/") if target.startswith("/") else f"xl/{target}"
+        sheets = []
+        if "xl/workbook.xml" in names:
+            for sheet in _xml(archive, "xl/workbook.xml").iter(f"{_S_NS}sheet"):
+                path = targets.get(sheet.get(f"{_R_NS}id", ""))
+                if path in names:
+                    sheets.append((sheet.get("name") or f"Sheet{len(sheets) + 1}", path))
+        if not sheets:
+            sheets = [(f"Sheet{_number(n)}", n) for n in sorted((n for n in names if re.fullmatch(r"xl/worksheets/sheet\d+\.xml", n)), key=_number)]
+        if not sheets:
+            raise ValueError("No worksheets were found in this Excel file.")
+
+        blocks, pages = [], []
+        for index, (title, path) in enumerate(sheets, 1):
+            rows = []
+            for row in _xml(archive, path).iter(f"{_S_NS}row"):
+                cells: Dict[int, str] = {}
+                for cell in row.iter(f"{_S_NS}c"):
+                    kind = cell.get("t")
+                    value_node = cell.find(f"{_S_NS}v")
+                    if kind == "inlineStr":
+                        value = "".join(t.text or "" for t in cell.iter(f"{_S_NS}t"))
+                    elif value_node is None or value_node.text is None:
+                        value = ""
+                    elif kind == "s":
+                        try:
+                            value = shared[int(value_node.text)]
+                        except (ValueError, IndexError):
+                            value = ""
+                    elif kind == "b":
+                        value = "TRUE" if value_node.text == "1" else "FALSE"
+                    else:
+                        value = value_node.text
+                    if value.strip():
+                        cells[_column_index(cell.get("r", ""))] = value.strip()
+                if cells:
+                    rows.append(" | ".join(cells.get(i, "") for i in range(max(cells) + 1)))
+                if len(rows) >= MAX_SHEET_ROWS:
+                    rows.append(f"[Sheet truncated after {MAX_SHEET_ROWS} rows]")
+                    break
+            body = "\n".join(rows)
+            pages.append({"page": index, "text": body, "char_count": len(body)})
+            if body:
+                blocks.append(f"--- Sheet: {title} ---\n{body}")
+        return _finish(filename, ext, file_bytes, "\n\n".join(blocks), pages, page_count=len(sheets))
+    except ValueError:
+        raise
+    except Exception as exc:
+        logger.warning("XLSX extraction failed for document_ref=%s (%s)", privacy_fingerprint(filename), type(exc).__name__)
+        raise ValueError(f"Failed to extract text from Excel file '{Path(filename).name}'.") from exc
+
+
+def extract_from_opendocument(filename: str, file_bytes: bytes, ext: str) -> Dict[str, Any]:
+    """OpenDocument text, presentation and spreadsheet files (.odt, .odp, .ods)."""
+    try:
+        archive = _open_zip(file_bytes, "OpenDocument")
+        if "content.xml" not in archive.namelist():
+            raise ValueError("This OpenDocument file has no readable content.")
+        root = _xml(archive, "content.xml")
+        lines: List[str] = []
+        if ext == "ods":
+            for row in root.iter():
+                if _local(row.tag) == "table-row":
+                    cells = ["".join(c.itertext()).strip() for c in row if _local(c.tag) == "table-cell"]
+                    if any(cells):
+                        lines.append(" | ".join(cells))
+        else:
+            for element in root.iter():
+                if _local(element.tag) in ("h", "p"):
+                    text = "".join(element.itertext()).strip()
+                    if text:
+                        lines.append(text)
+        return _finish(filename, ext, file_bytes, "\n".join(lines))
+    except ValueError:
+        raise
+    except Exception as exc:
+        logger.warning("OpenDocument extraction failed for document_ref=%s (%s)", privacy_fingerprint(filename), type(exc).__name__)
+        raise ValueError(f"Failed to extract text from '{Path(filename).name}'.") from exc
+
+
+def html_to_text(html: str) -> tuple:
+    """(title, readable text) of an HTML page: scripts, styles and, when a main article exists, page chrome dropped."""
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup(html or "", "lxml")
+    title = (soup.title.get_text(" ", strip=True) if soup.title else "")[:300]
+    for tag in soup(["script", "style", "noscript", "svg", "iframe", "template", "canvas"]):
+        tag.decompose()
+    container = soup.find("main") or soup.find("article")
+    if container is not None:
+        for tag in soup(["nav", "footer", "aside", "header"]):
+            if container not in tag.parents:
+                tag.decompose()
+        root = container
+    else:
+        root = soup.body or soup
+    lines = []
+    for block in root.find_all(["h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "pre", "tr", "dt", "dd", "blockquote", "figcaption"]):
+        if block.name == "tr":
+            text = " | ".join(c.get_text(" ", strip=True) for c in block.find_all(["th", "td"]))
+        else:
+            if block.find(["p", "li", "pre", "tr"]):  # its children are listed on their own
+                continue
+            text = block.get_text(" ", strip=True)
+        if not text.strip(" |"):
+            continue
+        lines.append(f"{'#' * int(block.name[1])} {text}" if re.fullmatch(r"h[1-6]", block.name) else text)
+    if not lines:  # no block structure at all
+        lines = [root.get_text("\n", strip=True)]
+    return title, "\n".join(lines)
+
+
+def extract_from_html(filename: str, file_bytes: bytes, ext: str = "html") -> Dict[str, Any]:
+    html = ""
+    for encoding in ("utf-8", "utf-8-sig", "latin-1"):
+        try:
+            html = file_bytes.decode(encoding)
+            break
+        except UnicodeDecodeError:
+            continue
+    title, text = html_to_text(html)
+    return _finish(filename, ext, file_bytes, (f"{title}\n\n" if title else "") + text)
+
+
+def extract_from_rtf(filename: str, file_bytes: bytes) -> Dict[str, Any]:
+    raw = file_bytes.decode("latin-1", errors="ignore")
+    raw = re.sub(r"\\'([0-9a-fA-F]{2})", lambda m: bytes.fromhex(m.group(1)).decode("cp1252", errors="ignore"), raw)
+    raw = re.sub(r"\\(par|line|row)\b", "\n", raw)
+    raw = re.sub(r"\\tab\b", "\t", raw)
+    raw = re.sub(r"\{\\\*[^{}]*\}", "", raw)
+    raw = re.sub(r"\\[a-zA-Z]+-?\d* ?", "", raw)
+    raw = re.sub(r"[{}\\]", "", raw)
+    return _finish(filename, "rtf", file_bytes, raw)
+
+
+def extract_from_zip(filename: str, file_bytes: bytes) -> Dict[str, Any]:
+    """A .zip (for example a zipped folder): each readable file inside is extracted and labelled by its path."""
+    archive = _open_zip(file_bytes, "ZIP")
+    blocks, read, skipped = [], 0, 0
+    for member in sorted(archive.infolist(), key=lambda m: m.filename):
+        path = member.filename
+        parts = path.split("/")
+        if (member.is_dir() or any(p.startswith(".") or p in ("__MACOSX", "node_modules") for p in parts)
+                or member.file_size > 10 * 1024 * 1024 or Path(path).suffix.lower() == ".zip"):
+            skipped += 1
+            continue
+        if read >= MAX_ARCHIVE_FILES_READ:
+            skipped += 1
+            continue
+        try:
+            part = extract_document(path, archive.read(member))
+        except Exception:
+            skipped += 1
+            continue
+        if part.get("text", "").strip():
+            blocks.append(f"=== {path} ===\n{part['text']}")
+            read += 1
+        else:
+            skipped += 1
+    if not blocks:
+        raise ValueError(f"No readable files were found inside '{Path(filename).name}'.")
+    if skipped:
+        blocks.append(f"[{skipped} other file(s) in the archive were skipped: unsupported, hidden, too large or over the {MAX_ARCHIVE_FILES_READ}-file limit]")
+    return _finish(filename, "zip", file_bytes, "\n\n".join(blocks), page_count=read)
+
+
+def _looks_like_text(file_bytes: bytes) -> bool:
+    sample = file_bytes[:8192]
+    if not sample or b"\x00" in sample:
+        return False
+    odd = sum(1 for byte in sample if byte < 9 or 13 < byte < 32)
+    return odd / len(sample) < 0.05
+
+
 def extract_document(filename: str, file_bytes: bytes) -> Dict[str, Any]:
     """
-    Main extraction dispatcher.
-    Accepts PDF, DOCX, PNG, JPG, JPEG, WEBP, BMP, TXT, MD, CSV, JSON, and LOG files.
+    Main extraction dispatcher. Reads PDF, Word (.docx), PowerPoint (.pptx), Excel (.xlsx/.xlsm), OpenDocument,
+    HTML, RTF, images (OCR), ZIP archives, and any plain-text-like file (data, configuration, logs, source code).
     """
     ext = Path(filename).suffix.lower().lstrip(".")
     if not ext:
@@ -329,13 +631,31 @@ def extract_document(filename: str, file_bytes: bytes) -> Dict[str, Any]:
         return extract_from_pdf(filename, file_bytes)
     elif ext == "png":
         return extract_from_png(filename, file_bytes)
-    elif ext in ("jpg", "jpeg", "webp", "bmp", "tiff"):
+    elif ext in ("jpg", "jpeg", "webp", "bmp", "tiff", "tif", "gif"):
         return extract_from_image(filename, file_bytes, ext)
     elif ext == "docx":
         return extract_from_docx(filename, file_bytes)
-    elif ext in ("txt", "md", "csv", "json", "log", "tsv", "xml", "sql", "yaml", "yml"):
+    elif ext in ("pptx", "pptm", "ppsx"):
+        return extract_from_pptx(filename, file_bytes)
+    elif ext in ("xlsx", "xlsm"):
+        return extract_from_xlsx(filename, file_bytes, ext)
+    elif ext in ("odt", "odp", "ods"):
+        return extract_from_opendocument(filename, file_bytes, ext)
+    elif ext in ("html", "htm", "xhtml"):
+        return extract_from_html(filename, file_bytes, ext)
+    elif ext == "rtf":
+        return extract_from_rtf(filename, file_bytes)
+    elif ext == "zip":
+        return extract_from_zip(filename, file_bytes)
+    elif ext in LEGACY_BINARY_OFFICE:
+        raise ValueError(
+            f"Unsupported file format '.{ext}'. Old binary Office files cannot be read; "
+            f"open it and save it as .{ext}x (the current format), then upload it again."
+        )
+    elif ext in TEXT_EXTENSIONS or _looks_like_text(file_bytes):
         return extract_from_plaintext(filename, file_bytes, ext)
     else:
         raise ValueError(
-            f"Unsupported file format '.{ext}'. Supported formats are: PDF, DOCX, PNG, JPG, WEBP, TXT, MD, CSV, JSON, LOG, TSV, XML, SQL, and YAML."
+            f"Unsupported file format '.{ext}'. Readable formats: PDF, Word, PowerPoint, Excel, OpenDocument, HTML, RTF, "
+            "images, ZIP archives, and text, data, configuration or source-code files."
         )

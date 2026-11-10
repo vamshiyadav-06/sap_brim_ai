@@ -82,6 +82,7 @@ export interface DocumentAttachment {
 
 export type MessageFeedback = 'up' | 'down';
 export type ChatMode = 'sprint' | 'scholar';
+export const DEFAULT_CHAT_MODE: ChatMode = 'scholar';
 
 /** Token estimates for one answer: what Clyptus.AI used, what a typical AI chatbot would, and the difference. */
 export interface TokenUsage {

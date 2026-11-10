@@ -20,6 +20,9 @@ values = {
     'JWT_SECRET': secrets.token_urlsafe(48),
     'ADMIN_API_KEY': secrets.token_urlsafe(32),
     'SUPER_ADMIN_PASSWORD': secrets.token_urlsafe(24),
+    # docker-compose.prod.yml refuses to start the redis service without it. Hex keeps it safe inside
+    # the redis:// URL and the redis-server command line.
+    'REDIS_PASSWORD': secrets.token_hex(32),
 }
 lines = []
 for line in template.splitlines():

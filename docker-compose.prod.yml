@@ -47,6 +47,39 @@ services:
         limits:
           cpus: "${POSTGRES_CPUS:-1.0}"
           memory: ${POSTGRES_MEMORY:-1g}
+    networks: [internal]
+    logging: *default-logging
+
+  redis:
+    image: redis:8.4.8-alpine
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      - --maxmemory
+      - 96mb
+      - --maxmemory-policy
+      # Rate-limit counters have TTLs; reject writes on exhaustion rather than evicting active limits.
+      - noeviction
+      - --requirepass
+      - ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env (generate with openssl rand -hex 32)}
+    environment:
+      REDISCLI_AUTH: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env (generate with openssl rand -hex 32)}
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          cpus: "${REDIS_CPUS:-0.25}"
+          memory: ${REDIS_MEMORY:-256m}
+    networks: [cache]
     logging: *default-logging
 
   backend:
@@ -62,9 +95,12 @@ services:
     environment:
       # Migrations run once in the container command before the API starts (RUN_MIGRATIONS_ON_START).
       AUTO_MIGRATE: "False"
-      # Requests reach the backend only through the web container on this private Docker network, so its
-      # X-Forwarded-For / X-Forwarded-Proto headers (real client IP, https) are trusted from private ranges.
-      TRUSTED_PROXIES: "172.16.0.0/12,10.0.0.0/8,192.168.0.0/16"
+      # Requests reach the backend only through the web (Caddy) container, which has the fixed address
+      # WEB_IP on the dedicated "internal" network below. Only that single address may set the client IP
+      # and scheme through X-Forwarded-* headers; any other container or host cannot forge them.
+      TRUSTED_PROXIES: "${WEB_IP:-172.29.250.10}"
+      # Shared rate-limit and failed-login counters. Password uses hex-only characters from openssl.
+      REDIS_URL: "redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}@redis:6379/0"
       # Secrets the backend does not need (it connects with DATABASE_URL); keep them out of its environment.
       POSTGRES_PASSWORD: ""
       SAP_BRIM_DB_PASSWORD: ""
@@ -74,6 +110,8 @@ services:
       - ./knowledge_base:/app/knowledge_base
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     security_opt:
       - no-new-privileges:true
@@ -86,6 +124,7 @@ services:
         limits:
           cpus: "${BACKEND_CPUS:-2.0}"
           memory: ${BACKEND_MEMORY:-3g}
+    networks: [internal, cache]
     logging: *default-logging
 
   web:
@@ -93,7 +132,7 @@ services:
       context: ./frontend
       args:
         VITE_API_BASE_URL: ${VITE_API_BASE_URL:-}
-        VITE_REGISTRATION_ENABLED: ${REGISTRATION_ENABLED:-True}
+        VITE_REGISTRATION_ENABLED: ${REGISTRATION_ENABLED:-False}
     image: sap-brim-web:${IMAGE_TAG:-latest}
     restart: unless-stopped
     environment:
@@ -125,7 +164,21 @@ services:
         limits:
           cpus: "${WEB_CPUS:-0.5}"
           memory: ${WEB_MEMORY:-256m}
+    networks:
+      internal:
+        ipv4_address: ${WEB_IP:-172.29.250.10}
     logging: *default-logging
+
+# One dedicated subnet with a fixed address for Caddy. Give each stack on the same host (production,
+# staging) its own PROXY_SUBNET / WEB_IP pair, because Docker rejects overlapping subnets.
+networks:
+  internal:
+    ipam:
+      config:
+        - subnet: ${PROXY_SUBNET:-172.29.250.0/24}
+  # Redis is reachable only by the backend, not by the public Caddy container.
+  cache:
+    internal: true
 
 volumes:
   pgdata:

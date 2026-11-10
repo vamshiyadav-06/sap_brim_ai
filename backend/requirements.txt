@@ -20,11 +20,17 @@ openai>=1.14.0
 groq>=0.5.0
 google-generativeai>=0.8.0
 httpx>=0.27.0
+# Shared production rate limits/login lockout storage (`REDIS_URL`).
+limits[redis]>=5.8.0,<6
 requests>=2.31.0
 tavily-python>=0.3.0
 pypdf>=4.1.0
 PyMuPDF>=1.24.0
 python-docx>=1.1.0
+# Generated downloads (documents the assistant creates): PowerPoint, Excel, and Markdown parsing for all formats
+python-pptx>=1.0.2
+XlsxWriter>=3.2.0
+markdown-it-py>=3.0.0
 Pillow>=10.0.0
 rapidocr>=3.10.0
 onnxruntime>=1.24.0

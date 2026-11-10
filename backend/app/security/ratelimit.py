@@ -84,8 +84,7 @@ class MemoryBackend:
 
 
 class LimitsRedisBackend:
-    """Shared counters in Redis via the `limits` package (moving window). Not exercised by the
-    offline test suite; requires `pip install limits[redis]` and a reachable Redis."""
+    """Shared counters in Redis via the `limits` package (moving window)."""
 
     def __init__(self, redis_url: str):
         from limits import RateLimitItemPerSecond
@@ -93,7 +92,13 @@ class LimitsRedisBackend:
         from limits.strategies import MovingWindowRateLimiter
 
         self._item = RateLimitItemPerSecond
-        self._storage = storage_from_string(redis_url)
+        self._storage = storage_from_string(
+            redis_url,
+            socket_connect_timeout=2,
+            socket_timeout=2,
+        )
+        if not self._storage.check():
+            raise ConnectionError("Redis rate-limit storage is not reachable")
         self._limiter = MovingWindowRateLimiter(self._storage)
 
     def _item_for(self, limit: int, window: float):
@@ -112,12 +117,18 @@ class LimitsRedisBackend:
     def reset(self) -> None:
         self._storage.reset()
 
+    def check(self) -> bool:
+        return bool(self._storage.check())
+
 
 def _build_backend():
     if settings.REDIS_URL:
         try:
             return LimitsRedisBackend(settings.REDIS_URL)
         except Exception as exc:  # missing package or unreachable Redis: fail safe to per-process limits
+            if settings.ENVIRONMENT.lower() == "production":
+                # Do not silently claim shared rate limiting when production Redis is misconfigured.
+                raise RuntimeError("Configured Redis rate-limit storage is unavailable") from exc
             logger.error("Rate limiter could not use REDIS_URL (%s); falling back to in-memory limits", type(exc).__name__)
     return MemoryBackend(max_keys=settings.RATE_LIMIT_MAX_KEYS)
 
@@ -129,6 +140,16 @@ class RateLimiter:
     @property
     def shared(self) -> bool:
         return not isinstance(self.backend, MemoryBackend)
+
+    def check(self) -> bool:
+        """Report whether configured shared storage is currently reachable."""
+        if isinstance(self.backend, MemoryBackend):
+            return not bool(settings.REDIS_URL)
+        try:
+            return bool(self.backend.check())
+        except Exception as exc:
+            logger.error("Redis rate-limit health check failed (%s)", type(exc).__name__)
+            return False
 
     def allow(self, scope: str, identity: str, limit: int, window: float = 60) -> bool:
         if not settings.RATE_LIMIT_ENABLED:

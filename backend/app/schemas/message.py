@@ -5,6 +5,11 @@ from backend.app.schemas.citation import CitationResponse, WebSourceResponse, We
 from backend.app.config import settings
 
 
+# Files (also a folder's files and linked pages) attached to one message; their text must fit the request body.
+MAX_ATTACHMENTS = 20
+MAX_ATTACHMENT_TOTAL_CHARS = 1_500_000
+
+
 class DocumentAttachment(BaseModel):
     name: str = Field(..., min_length=1, max_length=500)
     file_type: Optional[str] = Field(default="pdf", max_length=32)
@@ -19,6 +24,10 @@ class DocumentAttachment(BaseModel):
         if not value:
             raise ValueError("Attachment filename cannot be empty.")
         return value
+
+
+class UrlExtractRequest(BaseModel):
+    url: str = Field(..., min_length=8, max_length=2000)
 
 
 class DocumentExtractResponse(BaseModel):
@@ -44,10 +53,17 @@ class UploadedAttachmentInfo(BaseModel):
 
 class MessageCreate(BaseModel):
     content: str = Field(..., min_length=1, max_length=200000)
-    attachments: Optional[List[DocumentAttachment]] = Field(default=None, max_length=5)
+    attachments: Optional[List[DocumentAttachment]] = Field(default=None, max_length=MAX_ATTACHMENTS)
     # Keep legacy API callers on Scholar; the chat UI explicitly sends its Sprint default.
     mode: Literal["sprint", "scholar"] = "scholar"
     is_regeneration: Optional[bool] = False
+
+    @field_validator("attachments")
+    @classmethod
+    def enforce_total_attachment_size(cls, value):
+        if value and sum(len(item.text) for item in value) > MAX_ATTACHMENT_TOTAL_CHARS:
+            raise ValueError("The attached files are too large together. Attach fewer or smaller files.")
+        return value
 
     @field_validator("content")
     @classmethod

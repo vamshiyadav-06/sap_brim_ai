@@ -111,6 +111,13 @@ def sentences(text):
     return [s.strip() for line in plain.split("\n") for s in re.split(r"(?<=[.!?])\s+", line) if s.strip()]
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _strict_grounding():
+    """These regressions cover the strict evidence-only pipeline (repair + guard); reference mode is the default."""
+    with patch.object(settings, "REFERENCE_MODE_ENABLED", False):
+        yield
+
+
 @pytest.fixture(scope="module")
 def bad_then_still_bad():
     with offline_pipeline(BAD_ANSWER, STILL_BAD_REPAIR) as calls:

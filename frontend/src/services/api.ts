@@ -69,7 +69,11 @@ const httpError = (resp: Response, action: string): ApiError =>
       ? SESSION_EXPIRED
       : resp.status === 402
         ? 'You have used all your tokens.'
-        : `${action} (HTTP ${resp.status}).`,
+        : resp.status === 429
+          ? 'You already have answers in progress. Wait for one to finish, then try again.'
+          : resp.status === 503
+            ? 'The assistant is busy right now. Please try again in a few seconds.'
+            : `${action} (HTTP ${resp.status}).`,
     resp.status,
   );
 
@@ -176,28 +180,34 @@ export const apiRegister = async (name: string, email: string, password: string)
   return resp.json();
 };
 
-export const apiLogin = async (email: string, password: string) => {
+export const apiLogin = async (email: string, password: string, unlockKey?: string) => {
   const resp = await fetchBackend(`${API_BASE_URL}/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password }),
+    body: JSON.stringify({ email, password, ...(unlockKey ? { unlock_key: unlockKey } : {}) }),
   });
   if (!resp.ok) {
     const errorData = await resp.json().catch(() => ({}));
-    throw new Error(errorData.detail || 'Invalid email or password');
+    throw new ApiError(errorData.detail || 'Invalid email or password', resp.status);
   }
   return resp.json();
 };
 
-export const apiAdminLogin = async (email: string, password: string) => {
+export const apiGetRegistrationStatus = async (): Promise<{ registration_enabled: boolean }> => {
+  const resp = await fetchBackend(`${API_BASE_URL}/auth/registration-status`);
+  if (!resp.ok) throw new ApiError('Could not load sign-up availability.', resp.status);
+  return resp.json();
+};
+
+export const apiAdminLogin = async (email: string, password: string, unlockKey?: string) => {
   const resp = await fetchBackend(`${API_BASE_URL}/auth/admin-login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password }),
+    body: JSON.stringify({ email, password, ...(unlockKey ? { unlock_key: unlockKey } : {}) }),
   });
   if (!resp.ok) {
     const errorData = await resp.json().catch(() => ({}));
-    throw new Error(errorData.detail || 'Invalid administrator email or password');
+    throw new ApiError(errorData.detail || 'Invalid administrator email or password', resp.status);
   }
   return resp.json();
 };
@@ -391,6 +401,45 @@ export const apiExtractDocument = async (file: File): Promise<{
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({}));
     throw new Error(err.detail || `Failed to extract document (${resp.statusText})`);
+  }
+  return resp.json();
+};
+
+/** Downloads a document the assistant created for this user (fetched with the login, then saved by the browser). */
+export const apiDownloadGeneratedFile = async (fileId: string, filename: string): Promise<void> => {
+  const resp = await authFetch(`${API_BASE_URL}/files/${fileId}`, { headers: { ...authHeaders() } });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    throw new Error(typeof err.detail === 'string' ? err.detail : 'The file could not be downloaded.');
+  }
+  const url = URL.createObjectURL(await resp.blob());
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+};
+
+/** Reads a web page or online file the user linked (the server only opens public http/https addresses). */
+export const apiExtractUrl = async (url: string): Promise<{
+  filename: string;
+  file_type: string;
+  size_bytes: number;
+  page_count: number;
+  char_count: number;
+  preview: string;
+  text: string;
+}> => {
+  const resp = await authFetch(`${API_BASE_URL}/chats/extract-url`, {
+    method: 'POST',
+    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url }),
+  });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    throw new Error(typeof err.detail === 'string' ? err.detail : 'That link could not be read.');
   }
   return resp.json();
 };
@@ -856,6 +905,45 @@ export interface SystemConfig {
   signed_in_admin: string;
 }
 
+export interface AdminSecurityControls {
+  registration_enabled: boolean;
+  login_max_failures: number;
+  unlock_key_ttl_minutes: number;
+}
+
+export interface LoginLockout {
+  id: string;
+  name: string;
+  email: string;
+  account_type: string;
+  locked_at: string | null;
+  key_expires_at: string | null;
+}
+
+const adminSecurityRequest = async <T>(path: string, init?: RequestInit): Promise<T> => {
+  const resp = await authFetch(`${API_BASE_URL}/admin${path}`, {
+    ...init,
+    headers: { 'Content-Type': 'application/json', ...authHeaders(), ...init?.headers },
+  });
+  const body = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw new ApiError(body.detail || 'Could not update authentication controls.', resp.status);
+  return body as T;
+};
+
+export const apiAdminGetSecurityControls = (): Promise<AdminSecurityControls> =>
+  adminSecurityRequest('/security-controls');
+
+export const apiAdminSetRegistration = (registration_enabled: boolean): Promise<{ registration_enabled: boolean }> =>
+  adminSecurityRequest('/security-controls/registration', {
+    method: 'PUT', body: JSON.stringify({ registration_enabled }),
+  });
+
+export const apiAdminListLoginLockouts = (): Promise<{ users: LoginLockout[] }> =>
+  adminSecurityRequest('/login-lockouts');
+
+export const apiAdminIssueLoginUnlockKey = (userId: string): Promise<{ user_id: string; email: string; key: string; expires_at: string }> =>
+  adminSecurityRequest(`/users/${encodeURIComponent(userId)}/login-unlock-key`, { method: 'POST' });
+
 /** Admin only: the live model and threshold settings shown on the System tab. */
 export const apiGetSystemConfig = async (): Promise<SystemConfig> => {
   const resp = await authFetch(`${API_BASE_URL}/rag-inspect/system-config`, {
@@ -978,8 +1066,10 @@ export const apiOrgCompleteActivation = (code: string, name: string, password: s
   });
 
 /** POST /org/auth/login: organisation accounts only. */
-export const apiOrgLogin = (email: string, password: string): Promise<AuthTokenResponse> =>
-  orgRequest('/org/auth/login', 'Invalid email or password', { method: 'POST', body: { email, password }, auth: false });
+export const apiOrgLogin = (email: string, password: string, unlockKey?: string): Promise<AuthTokenResponse> =>
+  orgRequest('/org/auth/login', 'Invalid email or password', {
+    method: 'POST', body: { email, password, ...(unlockKey ? { unlock_key: unlockKey } : {}) }, auth: false,
+  });
 
 /** POST /auth/change-password: returns a new session; older tokens are revoked. */
 export const apiChangePassword = (currentPassword: string, newPassword: string): Promise<AuthTokenResponse> =>

@@ -1,4 +1,5 @@
 import os
+import tempfile
 from pathlib import Path
 from urllib.parse import urlparse
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -18,6 +19,23 @@ class Settings(BaseSettings):
     DATABASE_CONNECT_TIMEOUT: int = int(os.getenv("DATABASE_CONNECT_TIMEOUT", "5"))
     DATABASE_POOL_SIZE: int = int(os.getenv("DATABASE_POOL_SIZE", "10"))
     DATABASE_MAX_OVERFLOW: int = int(os.getenv("DATABASE_MAX_OVERFLOW", "20"))
+    # How long a request waits for a free pooled connection before failing with a clean 503 (SQLAlchemy's own
+    # default is 30 s, long enough for every worker thread to pile up behind a stuck query).
+    DATABASE_POOL_TIMEOUT: int = int(os.getenv("DATABASE_POOL_TIMEOUT", "10"))
+    # Capacity (services/capacity.py). At most MAX_CONCURRENT_ANSWERS answers run at once (0 = no limit); up to
+    # ANSWER_QUEUE_MAX more wait at most ANSWER_QUEUE_WAIT_SECONDS for a slot, the rest get an immediate 503.
+    # One user may run MAX_CONCURRENT_ANSWERS_PER_USER at a time (0 = no per-user limit). Each running answer
+    # can hold a pooled database connection, so keep MAX_CONCURRENT_ANSWERS + 6 <= pool size + overflow.
+    MAX_CONCURRENT_ANSWERS: int = int(os.getenv("MAX_CONCURRENT_ANSWERS", "16"))
+    ANSWER_QUEUE_MAX: int = int(os.getenv("ANSWER_QUEUE_MAX", "32"))
+    ANSWER_QUEUE_WAIT_SECONDS: float = float(os.getenv("ANSWER_QUEUE_WAIT_SECONDS", "15"))
+    MAX_CONCURRENT_ANSWERS_PER_USER: int = int(os.getenv("MAX_CONCURRENT_ANSWERS_PER_USER", "3"))
+    # Threads available to synchronous endpoints (the framework default is 40).
+    THREADPOOL_SIZE: int = int(os.getenv("THREADPOOL_SIZE", "64"))
+    # On shutdown, wait this long for running answers to finish and be saved (keep below the container's
+    # stop_grace_period).
+    SHUTDOWN_DRAIN_SECONDS: float = float(os.getenv("SHUTDOWN_DRAIN_SECONDS", "25"))
+    HEALTH_CHECK_TIMEOUT_SECONDS: float = float(os.getenv("HEALTH_CHECK_TIMEOUT_SECONDS", "3"))
     # Apply Alembic migrations at startup (AUDIT_REPORT F-29). Convenient for development; in production
     # set False and run `alembic -c backend/alembic.ini upgrade head` as a deploy step (startup then
     # refuses to run against an out-of-date schema).
@@ -42,9 +60,9 @@ class Settings(BaseSettings):
     # requires an explicit deployment setting. Organisations use Super-Admin activation codes.
     # Token wallet (services/token_wallet.py): each individual account gets this many tokens, refilled to it
     # every TOKEN_REFILL_DAYS days.
-    TOKEN_ALLOWANCE: int = int(os.getenv("TOKEN_ALLOWANCE", "1000"))
+    TOKEN_ALLOWANCE: int = int(os.getenv("TOKEN_ALLOWANCE", "100"))
     TOKEN_REFILL_DAYS: int = int(os.getenv("TOKEN_REFILL_DAYS", "3"))
-    REGISTRATION_ENABLED: bool = os.getenv("REGISTRATION_ENABLED", "True").lower() in ("true", "1")
+    REGISTRATION_ENABLED: bool = os.getenv("REGISTRATION_ENABLED", "False").lower() in ("true", "1")
     DEFAULT_ACCESS_GROUP: str = os.getenv("DEFAULT_ACCESS_GROUP", "all")
 
     # Rate limits and login lockout (AUDIT_REPORT F-06). REDIS_URL shares counters across workers;
@@ -58,6 +76,7 @@ class Settings(BaseSettings):
     LOGIN_RATE_LIMIT_PER_MINUTE: int = int(os.getenv("LOGIN_RATE_LIMIT_PER_MINUTE", "10"))
     LOGIN_MAX_FAILURES: int = int(os.getenv("LOGIN_MAX_FAILURES", "5"))
     LOGIN_LOCKOUT_WINDOW_SECONDS: int = int(os.getenv("LOGIN_LOCKOUT_WINDOW_SECONDS", "900"))
+    LOGIN_UNLOCK_KEY_TTL_MINUTES: int = int(os.getenv("LOGIN_UNLOCK_KEY_TTL_MINUTES", "15"))
     ANSWER_RATE_LIMIT_PER_MINUTE: int = int(os.getenv("ANSWER_RATE_LIMIT_PER_MINUTE", "12"))
     EXTRACT_RATE_LIMIT_PER_MINUTE: int = int(os.getenv("EXTRACT_RATE_LIMIT_PER_MINUTE", "10"))
     MAX_UPLOAD_BYTES: int = int(os.getenv("MAX_UPLOAD_BYTES", str(50 * 1024 * 1024)))
@@ -87,7 +106,7 @@ class Settings(BaseSettings):
     LLM_MODEL: str = os.getenv("LLM_MODEL", "")
     # User-authorized tier order. Set this explicitly to empty to disable cloud text generation.
     LLM_ALLOWED_PROVIDERS: str = os.getenv("LLM_ALLOWED_PROVIDERS", "groq,gemini,openrouter")
-    LLM_ALLOW_FREE_TIER: bool = os.getenv("LLM_ALLOW_FREE_TIER", "True").lower() in ("true", "1")
+    LLM_ALLOW_FREE_TIER: bool = os.getenv("LLM_ALLOW_FREE_TIER", "False").lower() in ("true", "1")
     LLM_GROQ_MODELS: str = os.getenv("LLM_GROQ_MODELS", "qwen/qwen3.8-27b,openai/gpt-oss-120b,openai/gpt-oss-20b,allam-2-7b")
     LLM_GEMINI_MODELS: str = os.getenv("LLM_GEMINI_MODELS", "gemini-2.5-flash,gemini-3.8-flash")
     LLM_OPENROUTER_MODELS: str = os.getenv("LLM_OPENROUTER_MODELS", "liquid/lfm-2.5-2.6b:free,nvidia/nemotron-3.5-lightning:free")
@@ -101,6 +120,18 @@ class Settings(BaseSettings):
     GROQ_TOKENS_PER_MINUTE: int = int(os.getenv("GROQ_TOKENS_PER_MINUTE", "8000"))
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
     OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "")
+    # Up to three extra keys per provider, used in this order only when the key before them is rejected or
+    # out of quota (see services/provider_keys.py). Leave a name empty to leave that slot unused; a key
+    # added to .env takes effect on the next backend restart.
+    GROQ_API_KEY_FALLBACK_1: str = os.getenv("GROQ_API_KEY_FALLBACK_1", "")
+    GROQ_API_KEY_FALLBACK_2: str = os.getenv("GROQ_API_KEY_FALLBACK_2", "")
+    GROQ_API_KEY_FALLBACK_3: str = os.getenv("GROQ_API_KEY_FALLBACK_3", "")
+    GEMINI_API_KEY_FALLBACK_1: str = os.getenv("GEMINI_API_KEY_FALLBACK_1", "")
+    GEMINI_API_KEY_FALLBACK_2: str = os.getenv("GEMINI_API_KEY_FALLBACK_2", "")
+    GEMINI_API_KEY_FALLBACK_3: str = os.getenv("GEMINI_API_KEY_FALLBACK_3", "")
+    OPENROUTER_API_KEY_FALLBACK_1: str = os.getenv("OPENROUTER_API_KEY_FALLBACK_1", "")
+    OPENROUTER_API_KEY_FALLBACK_2: str = os.getenv("OPENROUTER_API_KEY_FALLBACK_2", "")
+    OPENROUTER_API_KEY_FALLBACK_3: str = os.getenv("OPENROUTER_API_KEY_FALLBACK_3", "")
     # OpenAI-compatible endpoint used for OpenRouter. Only tests and the E2E stack point it elsewhere
     # (a local stub provider), so browser tests never make chargeable calls.
     OPENROUTER_BASE_URL: str = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
@@ -156,6 +187,22 @@ class Settings(BaseSettings):
     ANSWER_STYLE_LLM_CLASSIFIER_ENABLED: bool = os.getenv("ANSWER_STYLE_LLM_CLASSIFIER_ENABLED", "True").lower() in ("true", "1")
     ANSWER_STYLE_CLASSIFIER_MODEL: str = os.getenv("ANSWER_STYLE_CLASSIFIER_MODEL", "openai/gpt-oss-20b")
     ANSWER_STYLE_CLASSIFIER_TIMEOUT: float = float(os.getenv("ANSWER_STYLE_CLASSIFIER_TIMEOUT", "4.0"))
+    # Documents the assistant creates on request (Word, PDF, Excel, PowerPoint, CSV, text, Markdown, HTML).
+    # Files are stored for their owner only and deleted after the TTL; point the directory at a volume to keep
+    # them across container restarts.
+    DOCUMENT_GENERATION_ENABLED: bool = os.getenv("DOCUMENT_GENERATION_ENABLED", "True").lower() in ("true", "1")
+    GENERATED_FILES_DIR: Path = Path(os.getenv("GENERATED_FILES_DIR", "") or (Path(tempfile.gettempdir()) / "clyptus_generated_files"))
+    GENERATED_FILE_TTL_DAYS: int = int(os.getenv("GENERATED_FILE_TTL_DAYS", "14"))
+    # Reference mode: retrieved passages are reference notes, not ground truth. The model answers as a senior SAP
+    # architect, uses them for context, corrects them when they are wrong and fills gaps from its own knowledge;
+    # claim verification is kept as an admin-only diagnostic and no longer deletes, repairs or flags the answer.
+    # False restores strict evidence-only answering (verify -> repair -> guard -> notice).
+    REFERENCE_MODE_ENABLED: bool = os.getenv("REFERENCE_MODE_ENABLED", "True").lower() in ("true", "1")
+    # The first LLM call of every question: intent (SAP BRIM / follow-up / general / clarification) and
+    # spelling correction by meaning, not keywords. Off or unavailable -> the older rule-based routing.
+    INTENT_ANALYZER_ENABLED: bool = os.getenv("INTENT_ANALYZER_ENABLED", "True").lower() in ("true", "1")
+    INTENT_ANALYZER_MODEL: str = os.getenv("INTENT_ANALYZER_MODEL", "") or os.getenv("ANSWER_STYLE_CLASSIFIER_MODEL", "openai/gpt-oss-20b")
+    INTENT_ANALYZER_TIMEOUT: float = float(os.getenv("INTENT_ANALYZER_TIMEOUT", "6.0"))
     ANSWER_STYLE_DEFAULT: str = os.getenv("ANSWER_STYLE_DEFAULT", "technical_explanation")
     ANSWER_STYLE_DEFAULT_DETAIL: str = os.getenv("ANSWER_STYLE_DEFAULT_DETAIL", "balanced")
     ANSWER_STYLE_MAX_SECTIONS: int = int(os.getenv("ANSWER_STYLE_MAX_SECTIONS", "4"))
@@ -232,6 +279,8 @@ class Settings(BaseSettings):
     # Tavily web fallback
     WEB_FALLBACK_ENABLED: bool = os.getenv("WEB_FALLBACK_ENABLED", "True").lower() in ("true", "1")
     WEB_SEARCH_API_KEY: str = os.getenv("WEB_SEARCH_API_KEY", "")
+    # Per-call timeout for the web-search provider (Tavily). It runs inside user requests.
+    WEB_SEARCH_TIMEOUT_SECONDS: float = float(os.getenv("WEB_SEARCH_TIMEOUT_SECONDS", "15"))
 
     # Canonical knowledge-base source directory (at repo root if present).
     # Keep exactly one source location so ingestion results can be reconciled with

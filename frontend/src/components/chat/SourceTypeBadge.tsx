@@ -48,7 +48,7 @@ export const SourceTypeBadge: React.FC<SourceTypeBadgeProps> = ({ sourceType }) 
     return (
       <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-orange-500/15 text-orange-300 border border-orange-500/30">
         <Zap className="w-3 h-3 text-orange-400" />
-        <span>Low Direct Answer</span>
+        <span>Direct LLM Answer</span>
       </span>
     );
   }

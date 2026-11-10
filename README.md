@@ -135,7 +135,7 @@ SAP_BRIM_Ai/
 │   ├── requirements.txt      # Python dependencies
 │   ├── Dockerfile            # Production backend image (context: repository root)
 │   ├── alembic.ini           # Alembic configuration (URL comes from .env)
-│   ├── migrations/           # Alembic environment and revisions 0001–0006
+│   ├── migrations/           # Alembic environment and revisions 0001–0016
 │   ├── app/
 │   │   ├── main.py           # FastAPI app, middleware, router mounting, /health
 │   │   ├── config.py         # All settings (pydantic-settings) and startup security checks
@@ -302,7 +302,19 @@ PostgreSQL 16 with the pgvector extension, managed by Alembic.
 | `0004_document_source_tier` | Document authority tiers |
 | `0005_embedding_provenance` | Embedding model/version on chunks and messages |
 | `0006_organisations` | Organisation portal tables and user columns |
+| `0007_message_llm_tracking` | Provider/model/regeneration columns on messages |
+| `0008_message_token_usage` | Per-answer token usage and baseline |
+| `0009_projects` | Server-side projects and `chats.project_id` |
+| `0010_refresh_tokens` | Rotating refresh-token families |
+| `0011_token_wallet` | Free token wallet (`users.token_balance_milli`) |
+| `0012_token_refill` | Wallet refill date (`users.token_refill_at`) |
+| `0013_user_memories` | `user_memories` table (things a user asked the assistant to remember) |
+| `0014_user_language` | Answer language (`users.preferred_language`) |
+| `0015_question_language` | Question language (`users.question_language`) |
+| `0016_auth_security_controls` | Persisted registration switch and login-lockout/unlock-key columns |
+| `0017_token_allowance_100` | Free token allowance 1,000 → 100: new column default, balances above 100 capped |
 
+- **Downgrades.** Revisions `0016` down to `0002` downgrade one step at a time (verified on a scratch database; `0016` drops only the registration switch and lockout state, not user rows). `0001_baseline` refuses to downgrade by design: restore from a backup instead.
 - **Startup.** With `AUTO_MIGRATE=True` (default) the backend migrates at startup. With `False` it refuses to start on an outdated schema; run `python -m alembic -c backend/alembic.ini upgrade head` instead. Migrations take an advisory lock, so only one worker migrates at a time.
 - **Indexes vs search.** Vectors are stored in pgvector columns with HNSW indexes. Similarity search itself runs in the backend's in-memory index, which is built from these rows at startup and after document changes.
 

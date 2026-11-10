@@ -28,6 +28,8 @@ import { useAuth } from '../../context/AuthContext';
 import { DocumentManagementPage } from '../DocumentManagementPage';
 import { OrganisationsAdminPanel } from '../../components/admin/OrganisationsAdminPanel';
 import { IndividualUsersAdminPanel } from '../../components/admin/IndividualUsersAdminPanel';
+import { AuthenticationControls } from '../../components/admin/AuthenticationControls';
+import { NewUserSignInToggle } from '../../components/admin/NewUserSignInToggle';
 import {
   apiGetRAGInspectionDocuments,
   apiGetSystemConfig,
@@ -162,6 +164,31 @@ export const AdminDashboard: React.FC = () => {
     );
   });
 
+  type AdminTab = 'organisations' | 'individuals' | 'documents' | 'sources' | 'sandbox' | 'system';
+  const accountTabs: { id: AdminTab; label: string; icon: typeof Building2 }[] = [
+    { id: 'organisations', label: 'Organisations', icon: Building2 },
+    { id: 'individuals', label: 'Individual users', icon: UserRound },
+  ];
+  const knowledgeTabs: { id: AdminTab; label: string; icon: typeof Building2 }[] = [
+    { id: 'documents', label: 'Document Manager & Ingestion', icon: Database },
+    { id: 'sources', label: 'Internal Sources & Repository', icon: Layers },
+    { id: 'sandbox', label: 'Retrieval & Chunk Sandbox', icon: Sliders },
+    { id: 'system', label: 'System & Security Policy', icon: Cpu },
+  ];
+  const focusRing = 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/60';
+  const groupButtonClass = (open: boolean) =>
+    `inline-flex items-center gap-2 h-9 px-3.5 rounded-lg text-xs font-bold uppercase tracking-wider transition whitespace-nowrap cursor-pointer border ${focusRing} ${
+      open
+        ? 'bg-slate-100 dark:bg-zinc-800 text-slate-900 dark:text-white border-amber-500/60'
+        : 'bg-transparent text-slate-600 dark:text-zinc-400 hover:text-slate-800 dark:hover:text-zinc-200 hover:bg-slate-100/60 dark:hover:bg-zinc-800/60 border-slate-200 dark:border-zinc-700'
+    }`;
+  const tabButtonClass = (active: boolean) =>
+    `inline-flex items-center gap-2 h-8 px-3 rounded-lg text-xs font-semibold transition whitespace-nowrap cursor-pointer ${focusRing} ${
+      active
+        ? 'bg-amber-500 text-slate-950 shadow-sm'
+        : 'text-slate-600 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-white hover:bg-white dark:hover:bg-zinc-800'
+    }`;
+
   return (
     <>
       <PageMeta
@@ -171,41 +198,43 @@ export const AdminDashboard: React.FC = () => {
 
       <div className="min-h-screen bg-white dark:bg-[#07090e] text-slate-900 dark:text-zinc-100 flex flex-col font-sans">
         {/* Top Navigation Bar */}
-        <header className="sticky top-0 z-30 bg-white/95 dark:bg-[#0c0e15]/95 backdrop-blur-md border-b border-slate-200/80 dark:border-zinc-800/80 px-4 md:px-8 py-3.5">
-          <div className="max-w-7xl mx-auto flex items-center justify-between gap-4">
-            {/* Left: Branding & Role Badge */}
-            <div className="flex items-center gap-3">
-              <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-amber-600 via-orange-500 to-amber-400 p-0.5 shadow-md shadow-amber-500/20">
+        <header className="sticky top-0 z-30 bg-white/95 dark:bg-[#0c0e15]/95 backdrop-blur-md border-b border-slate-200 dark:border-zinc-800">
+          {/* Row 1: brand (left) and account actions (right), all controls share one height */}
+          <div className="max-w-7xl mx-auto px-4 md:px-8 py-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="w-10 h-10 shrink-0 rounded-xl bg-gradient-to-tr from-amber-600 via-orange-500 to-amber-400 p-0.5 shadow-sm shadow-amber-500/20">
                 <div className="w-full h-full bg-white dark:bg-[#0d0f17] rounded-[10px] flex items-center justify-center p-1.5">
                   <img src={iconOnly} alt="Clyptus.AI" className="w-full h-full object-contain" />
                 </div>
               </div>
 
-              <div>
+              <div className="min-w-0 leading-tight">
                 <div className="flex items-center gap-2">
-                  <span className="font-bold text-sm tracking-tight text-slate-900 dark:text-white">
+                  <span className="font-bold text-sm tracking-tight text-slate-900 dark:text-white whitespace-nowrap">
                     Clyptus.AI <span className="text-amber-700 dark:text-amber-400">Enterprise</span>
                   </span>
-                  <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30 flex items-center gap-1">
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30 inline-flex items-center gap-1 whitespace-nowrap">
                     <ShieldCheck size={11} className="text-amber-700 dark:text-amber-400" />
                     SUPER ADMIN
                   </span>
                 </div>
-                <div className="text-[11px] font-mono text-slate-600 dark:text-zinc-400 truncate flex items-center gap-1.5">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                  <span>{user?.email}</span>
+                <div className="mt-0.5 text-[11px] font-mono text-slate-600 dark:text-zinc-400 flex items-center gap-1.5 min-w-0">
+                  <span className="w-1.5 h-1.5 shrink-0 rounded-full bg-emerald-500 animate-pulse" aria-hidden="true" />
+                  <span className="truncate">{user?.email}</span>
                 </div>
               </div>
             </div>
 
-            {/* Right: Quick actions */}
-            <div className="flex items-center gap-2.5">
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <NewUserSignInToggle />
+              <span className="hidden md:block w-px h-6 bg-slate-200 dark:bg-zinc-700" aria-hidden="true" />
               <Link
                 to="/app"
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-100/80 dark:bg-zinc-800/80 hover:bg-slate-100 dark:hover:bg-zinc-700 text-slate-800 dark:text-zinc-200 text-xs font-semibold transition border border-slate-200/60 dark:border-zinc-700/60"
+                className="inline-flex items-center justify-center gap-2 h-9 px-3.5 rounded-lg bg-white dark:bg-zinc-900 hover:bg-slate-50 dark:hover:bg-zinc-800 text-slate-800 dark:text-zinc-200 text-xs font-semibold transition border border-slate-200 dark:border-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/60"
                 title="Switch to user chat interface"
+                aria-label="User Chat Workspace"
               >
-                <MessageSquare size={13} className="text-amber-700 dark:text-amber-400" />
+                <MessageSquare size={14} className="text-amber-700 dark:text-amber-400" />
                 <span className="hidden sm:inline">User Chat Workspace</span>
               </Link>
 
@@ -215,156 +244,95 @@ export const AdminDashboard: React.FC = () => {
                   logout();
                   navigate('/admin/login', { replace: true });
                 }}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-700 dark:text-rose-400 hover:text-rose-700 dark:hover:text-rose-300 text-xs font-semibold transition border border-rose-500/30 cursor-pointer"
+                className="inline-flex items-center justify-center gap-2 h-9 px-3.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-700 dark:text-rose-400 text-xs font-semibold transition border border-rose-500/30 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50"
                 title="Sign out of administrator session"
+                aria-label="Sign Out"
               >
-                <LogOut size={13} />
+                <LogOut size={14} />
                 <span className="hidden sm:inline">Sign Out</span>
               </button>
             </div>
           </div>
 
-          {/* Sub Navigation Tabs */}
-          <div className="max-w-7xl mx-auto mt-3 border-t border-slate-200/50 dark:border-zinc-800/50 pt-3">
-          <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Admin sections">
-            <button
-              type="button"
-              onClick={() => toggleGroup('accounts')}
-              aria-expanded={openGroup === 'accounts'}
-              aria-controls="admin-accounts-options"
-              className={`inline-flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-bold uppercase tracking-wider transition whitespace-nowrap cursor-pointer border ${
-                openGroup === 'accounts'
-                  ? 'bg-slate-100 dark:bg-zinc-800 text-slate-900 dark:text-white border-amber-500/60'
-                  : 'bg-transparent text-slate-600 dark:text-zinc-400 hover:text-slate-800 dark:hover:text-zinc-200 hover:bg-slate-100/60 dark:hover:bg-zinc-800/60 border-slate-200/60 dark:border-zinc-700/60'
-              }`}
-            >
-              <Users size={14} className={accountsTabActive ? 'text-amber-700 dark:text-amber-400' : undefined} />
-              <span>Accounts</span>
-              <ChevronDown
-                size={14}
-                aria-hidden="true"
-                className={`transition-transform ${openGroup === 'accounts' ? 'rotate-180' : ''}`}
-              />
-            </button>
+          {/* Row 2: section groups and the open group's options sit on one aligned line */}
+          <div className="border-t border-slate-200/70 dark:border-zinc-800/70">
+            <div className="max-w-7xl mx-auto px-4 md:px-8 py-2.5 flex flex-wrap items-center gap-x-3 gap-y-2">
+              <div className="flex items-center gap-2" role="group" aria-label="Admin sections">
+                <button
+                  type="button"
+                  onClick={() => toggleGroup('accounts')}
+                  aria-expanded={openGroup === 'accounts'}
+                  aria-controls="admin-accounts-options"
+                  className={groupButtonClass(openGroup === 'accounts')}
+                >
+                  <Users size={14} className={accountsTabActive ? 'text-amber-700 dark:text-amber-400' : undefined} />
+                  <span>Accounts</span>
+                  <ChevronDown
+                    size={14}
+                    aria-hidden="true"
+                    className={`transition-transform ${openGroup === 'accounts' ? 'rotate-180' : ''}`}
+                  />
+                </button>
 
-            <button
-              type="button"
-              onClick={() => toggleGroup('knowledge')}
-              aria-expanded={openGroup === 'knowledge'}
-              aria-controls="admin-knowledge-options"
-              className={`inline-flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-bold uppercase tracking-wider transition whitespace-nowrap cursor-pointer border ${
-                openGroup === 'knowledge'
-                  ? 'bg-slate-100 dark:bg-zinc-800 text-slate-900 dark:text-white border-amber-500/60'
-                  : 'bg-transparent text-slate-600 dark:text-zinc-400 hover:text-slate-800 dark:hover:text-zinc-200 hover:bg-slate-100/60 dark:hover:bg-zinc-800/60 border-slate-200/60 dark:border-zinc-700/60'
-              }`}
-            >
-              <BookOpen size={14} className={accountsTabActive ? undefined : 'text-amber-700 dark:text-amber-400'} />
-              <span>Knowledge base</span>
-              <ChevronDown
-                size={14}
-                aria-hidden="true"
-                className={`transition-transform ${openGroup === 'knowledge' ? 'rotate-180' : ''}`}
-              />
-            </button>
-          </div>
+                <button
+                  type="button"
+                  onClick={() => toggleGroup('knowledge')}
+                  aria-expanded={openGroup === 'knowledge'}
+                  aria-controls="admin-knowledge-options"
+                  className={groupButtonClass(openGroup === 'knowledge')}
+                >
+                  <BookOpen size={14} className={accountsTabActive ? undefined : 'text-amber-700 dark:text-amber-400'} />
+                  <span>Knowledge base</span>
+                  <ChevronDown
+                    size={14}
+                    aria-hidden="true"
+                    className={`transition-transform ${openGroup === 'knowledge' ? 'rotate-180' : ''}`}
+                  />
+                </button>
+              </div>
 
-          {openGroup === 'accounts' && (
-          <div
-            id="admin-accounts-options"
-            className="mt-2.5 flex flex-wrap items-center gap-2 pl-3 border-l-2 border-amber-500/40"
-          >
-            <button
-              type="button"
-              onClick={() => setActiveTab('organisations')}
-              aria-pressed={activeTab === 'organisations'}
-              className={`inline-flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-semibold transition whitespace-nowrap cursor-pointer ${
-                activeTab === 'organisations'
-                  ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
-                  : 'text-slate-600 dark:text-zinc-400 hover:text-slate-800 dark:hover:text-zinc-200 hover:bg-slate-100/60 dark:hover:bg-zinc-800/60'
-              }`}
-            >
-              <Building2 size={14} />
-              <span>Organisations</span>
-            </button>
+              {openGroup && <span className="hidden sm:block w-px h-6 bg-slate-200 dark:bg-zinc-700" aria-hidden="true" />}
 
-            <button
-              type="button"
-              onClick={() => setActiveTab('individuals')}
-              aria-pressed={activeTab === 'individuals'}
-              className={`inline-flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-semibold transition whitespace-nowrap cursor-pointer ${
-                activeTab === 'individuals'
-                  ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
-                  : 'text-slate-600 dark:text-zinc-400 hover:text-slate-800 dark:hover:text-zinc-200 hover:bg-slate-100/60 dark:hover:bg-zinc-800/60'
-              }`}
-            >
-              <UserRound size={14} />
-              <span>Individual users</span>
-            </button>
-          </div>
-          )}
+              {openGroup === 'accounts' && (
+                <div
+                  id="admin-accounts-options"
+                  className="flex flex-wrap items-center gap-1 p-1 rounded-xl bg-slate-100 dark:bg-zinc-900 border border-slate-200/70 dark:border-zinc-800"
+                >
+                  {accountTabs.map((tab) => (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      onClick={() => setActiveTab(tab.id)}
+                      aria-pressed={activeTab === tab.id}
+                      className={tabButtonClass(activeTab === tab.id)}
+                    >
+                      <tab.icon size={14} />
+                      <span>{tab.label}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
 
-          {openGroup === 'knowledge' && (
-          <div
-            id="admin-knowledge-options"
-            className="mt-2.5 flex flex-wrap items-center gap-2 pl-3 border-l-2 border-amber-500/40"
-          >
-            <button
-              type="button"
-              onClick={() => setActiveTab('documents')}
-              aria-pressed={activeTab === 'documents'}
-              className={`inline-flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-semibold transition whitespace-nowrap cursor-pointer ${
-                activeTab === 'documents'
-                  ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
-                  : 'text-slate-600 dark:text-zinc-400 hover:text-slate-800 dark:hover:text-zinc-200 hover:bg-slate-100/60 dark:hover:bg-zinc-800/60'
-              }`}
-            >
-              <Database size={14} />
-              <span>Document Manager & Ingestion</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setActiveTab('sources')}
-              aria-pressed={activeTab === 'sources'}
-              className={`inline-flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-semibold transition whitespace-nowrap cursor-pointer ${
-                activeTab === 'sources'
-                  ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
-                  : 'text-slate-600 dark:text-zinc-400 hover:text-slate-800 dark:hover:text-zinc-200 hover:bg-slate-100/60 dark:hover:bg-zinc-800/60'
-              }`}
-            >
-              <Layers size={14} />
-              <span>Internal Sources & Repository</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setActiveTab('sandbox')}
-              aria-pressed={activeTab === 'sandbox'}
-              className={`inline-flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-semibold transition whitespace-nowrap cursor-pointer ${
-                activeTab === 'sandbox'
-                  ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
-                  : 'text-slate-600 dark:text-zinc-400 hover:text-slate-800 dark:hover:text-zinc-200 hover:bg-slate-100/60 dark:hover:bg-zinc-800/60'
-              }`}
-            >
-              <Sliders size={14} />
-              <span>Retrieval & Chunk Sandbox</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setActiveTab('system')}
-              aria-pressed={activeTab === 'system'}
-              className={`inline-flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-semibold transition whitespace-nowrap cursor-pointer ${
-                activeTab === 'system'
-                  ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
-                  : 'text-slate-600 dark:text-zinc-400 hover:text-slate-800 dark:hover:text-zinc-200 hover:bg-slate-100/60 dark:hover:bg-zinc-800/60'
-              }`}
-            >
-              <Cpu size={14} />
-              <span>System & Security Policy</span>
-            </button>
-          </div>
-          )}
+              {openGroup === 'knowledge' && (
+                <div
+                  id="admin-knowledge-options"
+                  className="flex flex-wrap items-center gap-1 p-1 rounded-xl bg-slate-100 dark:bg-zinc-900 border border-slate-200/70 dark:border-zinc-800"
+                >
+                  {knowledgeTabs.map((tab) => (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      onClick={() => setActiveTab(tab.id)}
+                      aria-pressed={activeTab === tab.id}
+                      className={tabButtonClass(activeTab === tab.id)}
+                    >
+                      <tab.icon size={14} />
+                      <span>{tab.label}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         </header>
 
@@ -384,7 +352,7 @@ export const AdminDashboard: React.FC = () => {
         {/* Tab 1: Documents Management */}
         {activeTab === 'documents' && (
           <main className="flex-1 max-w-7xl w-full mx-auto p-4 md:p-8">
-            <div className="mb-6 p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-between gap-4">
+            <div className="mb-6 p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center gap-4">
               <div className="flex items-center gap-3">
                 <div className="p-2.5 rounded-xl bg-amber-500/20 text-amber-700 dark:text-amber-400">
                   <ShieldCheck size={20} />
@@ -420,12 +388,12 @@ export const AdminDashboard: React.FC = () => {
                 </p>
               </div>
 
-              <div className="flex items-center gap-3">
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
                 <button
                   type="button"
                   onClick={fetchSources}
                   disabled={sourcesLoading}
-                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-xl border border-slate-200 dark:border-zinc-700 hover:bg-slate-100 dark:hover:bg-zinc-800 text-slate-700 dark:text-zinc-300 transition cursor-pointer"
+                  className="inline-flex items-center justify-center gap-2 h-9 px-3.5 text-xs font-semibold rounded-lg border border-slate-200 dark:border-zinc-700 hover:bg-slate-100 dark:hover:bg-zinc-800 text-slate-700 dark:text-zinc-300 transition cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
                 >
                   <RefreshCw size={14} className={sourcesLoading ? 'animate-spin' : ''} />
                   Refresh
@@ -435,7 +403,7 @@ export const AdminDashboard: React.FC = () => {
                   type="button"
                   onClick={handleTriggerIngest}
                   disabled={ingestTriggering}
-                  className="inline-flex items-center gap-2 px-4 py-2 text-xs font-bold rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-slate-950 shadow-md shadow-amber-500/20 transition cursor-pointer"
+                  className="inline-flex items-center justify-center gap-2 h-9 px-4 text-xs font-bold rounded-lg bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-slate-950 shadow-sm shadow-amber-500/20 transition cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
                 >
                   <Play size={14} className="fill-current" />
                   {ingestTriggering ? 'Running Ingestion...' : 'Trigger Ingestion Pipeline'}
@@ -446,14 +414,14 @@ export const AdminDashboard: React.FC = () => {
             {ingestNotice && (
               <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs text-amber-700 dark:text-amber-300 flex items-center justify-between">
                 <span>{ingestNotice}</span>
-                <button onClick={() => setIngestNotice(null)} className="text-amber-700 dark:text-amber-400 hover:text-slate-900 dark:hover:text-white">✕</button>
+                <button type="button" aria-label="Dismiss notice" onClick={() => setIngestNotice(null)} className="ml-3 shrink-0 w-6 h-6 inline-flex items-center justify-center rounded-md text-amber-700 dark:text-amber-400 hover:bg-amber-500/20 hover:text-slate-900 dark:hover:text-white cursor-pointer">✕</button>
               </div>
             )}
 
             {/* Metrics Overview Cards */}
             {sourcesData?.summary && (
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-                <div className="p-4 rounded-2xl bg-white dark:bg-[#0d1018] border border-slate-200/80 dark:border-zinc-800/80 shadow-md">
+                <div className="p-4 rounded-2xl bg-white dark:bg-[#0d1018] border border-slate-200/80 dark:border-zinc-800/80 shadow-sm">
                   <span className="text-[11px] font-mono text-slate-600 dark:text-zinc-400 block mb-1">TOTAL DISCOVERED</span>
                   <strong className="text-2xl font-bold text-slate-900 dark:text-white">
                     {sourcesData.summary.total_files_discovered}
@@ -461,7 +429,7 @@ export const AdminDashboard: React.FC = () => {
                   <span className="text-[11px] text-slate-600 dark:text-zinc-400 block mt-0.5">Files in knowledge_base</span>
                 </div>
 
-                <div className="p-4 rounded-2xl bg-white dark:bg-[#0d1018] border border-slate-200/80 dark:border-zinc-800/80 shadow-md">
+                <div className="p-4 rounded-2xl bg-white dark:bg-[#0d1018] border border-slate-200/80 dark:border-zinc-800/80 shadow-sm">
                   <span className="text-[11px] font-mono text-emerald-700 dark:text-emerald-400 block mb-1">INDEXED SOURCES</span>
                   <strong className="text-2xl font-bold text-emerald-700 dark:text-emerald-400">
                     {sourcesData.summary.source_files_indexed}
@@ -469,7 +437,7 @@ export const AdminDashboard: React.FC = () => {
                   <span className="text-[11px] text-slate-600 dark:text-zinc-400 block mt-0.5">Fully chunked & vectorized</span>
                 </div>
 
-                <div className="p-4 rounded-2xl bg-white dark:bg-[#0d1018] border border-slate-200/80 dark:border-zinc-800/80 shadow-md">
+                <div className="p-4 rounded-2xl bg-white dark:bg-[#0d1018] border border-slate-200/80 dark:border-zinc-800/80 shadow-sm">
                   <span className="text-[11px] font-mono text-amber-700 dark:text-amber-400 block mb-1">TOTAL CHUNKS</span>
                   <strong className="text-2xl font-bold text-amber-700 dark:text-amber-400">
                     {sourcesData.summary.total_chunks}
@@ -477,9 +445,9 @@ export const AdminDashboard: React.FC = () => {
                   <span className="text-[11px] text-slate-600 dark:text-zinc-400 block mt-0.5">Semantic document chunks</span>
                 </div>
 
-                <div className="p-4 rounded-2xl bg-white dark:bg-[#0d1018] border border-slate-200/80 dark:border-zinc-800/80 shadow-md">
-                  <span className="text-[11px] font-mono text-cyan-400 block mb-1">VECTOR COVERAGE</span>
-                  <strong className="text-2xl font-bold text-cyan-400">
+                <div className="p-4 rounded-2xl bg-white dark:bg-[#0d1018] border border-slate-200/80 dark:border-zinc-800/80 shadow-sm">
+                  <span className="text-[11px] font-mono text-cyan-700 dark:text-cyan-400 block mb-1">VECTOR COVERAGE</span>
+                  <strong className="text-2xl font-bold text-cyan-700 dark:text-cyan-400">
                     {Math.round((sourcesData.summary.overall_embedding_coverage || 0) * 100)}%
                   </strong>
                   <span className="text-[11px] text-slate-600 dark:text-zinc-400 block mt-0.5">{sourcesData.summary.embedding_model}</span>
@@ -496,7 +464,7 @@ export const AdminDashboard: React.FC = () => {
                   value={sourcesSearch}
                   onChange={(e) => setSourcesSearch(e.target.value)}
                   placeholder="Search internal knowledge files by filename, title, or path..."
-                  className="w-full bg-white dark:bg-[#0d1018] border border-slate-200 dark:border-zinc-800 focus:border-amber-500 rounded-xl pl-10 pr-4 py-2.5 text-xs text-slate-900 dark:text-white placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-amber-500"
+                  className="w-full h-10 bg-white dark:bg-[#0d1018] border border-slate-200 dark:border-zinc-800 focus:border-amber-500 rounded-lg pl-10 pr-4 text-xs text-slate-900 dark:text-white placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-amber-500"
                 />
               </div>
             </div>
@@ -611,13 +579,13 @@ export const AdminDashboard: React.FC = () => {
                     value={testQuery}
                     onChange={(e) => setTestQuery(e.target.value)}
                     placeholder="Enter SAP BRIM question to inspect retrieved internal chunks..."
-                    className="flex-1 bg-white dark:bg-[#121520] border border-slate-200/80 dark:border-zinc-700/80 focus:border-amber-500 rounded-xl px-4 py-2.5 text-xs text-slate-900 dark:text-white placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-amber-500 font-sans"
+                    className="flex-1 min-w-0 h-10 bg-white dark:bg-[#121520] border border-slate-200/80 dark:border-zinc-700/80 focus:border-amber-500 rounded-lg px-4 text-xs text-slate-900 dark:text-white placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-amber-500 font-sans"
                   />
                   <button
                     type="button"
                     onClick={() => handleRunSandbox()}
                     disabled={sandboxRunning || !testQuery.trim()}
-                    className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-slate-950 font-bold text-xs shadow-md shadow-amber-500/20 transition active:scale-95 disabled:opacity-50 cursor-pointer flex items-center gap-2"
+                    className="h-10 px-5 shrink-0 rounded-lg bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-slate-950 font-bold text-xs shadow-sm shadow-amber-500/20 transition active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer inline-flex items-center justify-center gap-2"
                   >
                     {sandboxRunning ? (
                       <>
@@ -788,6 +756,8 @@ export const AdminDashboard: React.FC = () => {
                 Backend security posture, access control enforcement status, and enterprise database telemetry.
               </p>
             </div>
+
+            <AuthenticationControls />
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               {/* Security Enforcement Card */}

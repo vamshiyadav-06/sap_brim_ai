@@ -14,6 +14,7 @@ from backend.app.models.web_doc_chunk import WebDocChunk
 from backend.app.models.shared_prompt import SharedPrompt
 from backend.app.models.audit_event import AuditEvent
 from backend.app.models.refresh_token import RefreshToken
+from backend.app.models.security_setting import SecuritySetting
 from backend.app.models.organization import (
     Organization,
     OrgActivationCode,
@@ -39,6 +40,7 @@ __all__ = [
     "SharedPrompt",
     "AuditEvent",
     "RefreshToken",
+    "SecuritySetting",
     "Organization",
     "OrgActivationCode",
     "OrgSharedAnswer",

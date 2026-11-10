@@ -1,6 +1,6 @@
 """Free token wallet for individual accounts.
 
-Every individual account has an allowance (settings.TOKEN_ALLOWANCE, 1,000) that is topped back up to the full
+Every individual account has an allowance (settings.TOKEN_ALLOWANCE, 100) that is topped back up to the full
 allowance every settings.TOKEN_REFILL_DAYS days (3): unused tokens do not pile up, and the refill happens the
 first time the account is touched after the date (sign-in, profile, a question), so no scheduler is needed.
 Each answer costs

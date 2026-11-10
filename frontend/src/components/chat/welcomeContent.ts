@@ -19,20 +19,20 @@ export interface Suggestion {
 
 export const MODES: { id: ChatMode; title: string; summary: string; detail: string }[] = [
   {
-    id: 'sprint',
-    title: 'Low',
-    summary: 'Fast, direct answers',
-    detail: 'Answers straight away from the language model. Best for definitions and quick how-tos.',
-  },
-  {
     id: 'scholar',
-    title: 'High',
+    title: 'RAG Pipeline',
     summary: 'Researched and verified',
     detail: 'Searches curated SAP documentation and checks each claim before answering. Takes longer.',
   },
+  {
+    id: 'sprint',
+    title: 'Direct LLM',
+    summary: 'Fast, direct answers',
+    detail: 'Answers directly with the configured language model. Best for definitions and quick how-tos.',
+  },
 ];
 
-// Quick, conceptual questions suit Low; multi-step and configuration questions suit High.
+// Quick, conceptual questions suit Direct LLM; multi-step and configuration questions suit the RAG Pipeline.
 export const SUGGESTIONS: Record<ChatMode, Suggestion[]> = {
   sprint: [
     {

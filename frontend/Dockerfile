@@ -1,3 +1,4 @@
+
 # Web image: builds the React app and serves it with Caddy, which also terminates HTTPS (automatic
 # Let's Encrypt certificates) and forwards /api and /health to the backend container.
 # Used by docker-compose.prod.yml (see DEPLOYMENT.md). Build context: frontend/.
@@ -11,7 +12,7 @@ COPY . .
 # Set it only when the API is served from another origin, e.g. https://api.example.com/api.
 ARG VITE_API_BASE_URL=
 ENV VITE_API_BASE_URL=${VITE_API_BASE_URL}
-ARG VITE_REGISTRATION_ENABLED=true
+ARG VITE_REGISTRATION_ENABLED=false
 ENV VITE_REGISTRATION_ENABLED=${VITE_REGISTRATION_ENABLED}
 RUN npm run build
 

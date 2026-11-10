@@ -18,7 +18,7 @@ FRONTEND_DOCKERFILE = ROOT_DIR / "frontend" / "Dockerfile"
 CADDYFILE = ROOT_DIR / "frontend" / "Caddyfile"
 ASSIGNMENT = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$", re.MULTILINE)
 SECRET_KEYS = ("JWT_SECRET", "ADMIN_API_KEY", "SUPER_ADMIN_EMAIL", "SUPER_ADMIN_PASSWORD", "GROQ_API_KEY",
-               "GEMINI_API_KEY", "OPENROUTER_API_KEY", "WEB_SEARCH_API_KEY")
+               "GEMINI_API_KEY", "OPENROUTER_API_KEY", "WEB_SEARCH_API_KEY", "REDIS_PASSWORD")
 PRIVATE_JWT = "x" * 48
 
 
@@ -74,7 +74,9 @@ def test_production_template_targets_the_compose_database_and_https_origin():
     assert values["ENVIRONMENT"] == "production"
     assert values["ALLOWED_ORIGINS"] == f"https://{values['APP_DOMAIN']}"
     assert values["INCLUDE_SELF_AUTHORED_DOCS"] == "False"
-    assert values["REGISTRATION_ENABLED"] == "True"
+    assert values["REGISTRATION_ENABLED"] == "False"
+    assert values["LOGIN_MAX_FAILURES"] == "5"
+    assert values["LOGIN_UNLOCK_KEY_TTL_MINUTES"] == "15"
 
 
 def test_untouched_production_template_is_refused_at_startup():
@@ -150,19 +152,28 @@ def _compose():
 
 def test_only_the_web_container_is_published():
     services = _compose()["services"]
-    assert set(services) == {"postgres", "backend", "web"}
+    # redis holds the shared rate-limit/lockout counters; like postgres and the backend it is internal only.
+    assert set(services) == {"postgres", "redis", "backend", "web"}
     assert "ports" not in services["postgres"]
+    assert "ports" not in services["redis"]
     assert "ports" not in services["backend"]
     assert services["web"]["ports"]
 
 
-def test_backend_trusts_only_private_proxy_ranges_and_does_not_auto_migrate_in_process():
-    backend = _compose()["services"]["backend"]
+def test_backend_trusts_only_the_single_caddy_address_and_does_not_auto_migrate_in_process():
+    compose = _compose()
+    backend = compose["services"]["backend"]
     assert backend["environment"]["AUTO_MIGRATE"] == "False"
-    networks = [ipaddress.ip_network(part.strip()) for part in backend["environment"]["TRUSTED_PROXIES"].split(",")]
-    assert networks and all(network.is_private for network in networks)
+    # Whole private ranges (10/8, 172.16/12, 192.168/16) would let any container on the network forge client IPs.
+    trusted = backend["environment"]["TRUSTED_PROXIES"]
+    assert "," not in trusted and "/" not in trusted
+    default_ip = ipaddress.ip_address(re.search(r":-([0-9.]+)\}", trusted).group(1))
+    subnet = ipaddress.ip_network(re.search(r":-([0-9./]+)\}", compose["networks"]["internal"]["ipam"]["config"][0]["subnet"]).group(1))
+    assert default_ip.is_private and default_ip in subnet and subnet.prefixlen >= 24
+    web_ip = compose["services"]["web"]["networks"]["internal"]["ipv4_address"]
+    assert re.search(r":-([0-9.]+)\}", web_ip).group(1) == str(default_ip)
     assert backend["depends_on"]["postgres"]["condition"] == "service_healthy"
-    assert _compose()["services"]["web"]["depends_on"]["backend"]["condition"] == "service_healthy"
+    assert compose["services"]["web"]["depends_on"]["backend"]["condition"] == "service_healthy"
     assert "./knowledge_base:/app/knowledge_base" in backend["volumes"]
 
 
@@ -198,7 +209,7 @@ def test_web_image_builds_the_app_and_proxies_the_api_with_streaming():
     assert "try_files {path} /index.html" in caddyfile
     assert "frame-ancestors 'none'" in caddyfile
     assert "VITE_REGISTRATION_ENABLED" in dockerfile
-    assert _compose()["services"]["web"]["build"]["args"]["VITE_REGISTRATION_ENABLED"] == "${REGISTRATION_ENABLED:-True}"
+    assert _compose()["services"]["web"]["build"]["args"]["VITE_REGISTRATION_ENABLED"] == "${REGISTRATION_ENABLED:-False}"
 
 
 # --- staging template, gate and image pins ---------------------------------------------------------------
@@ -292,14 +303,30 @@ def test_backend_container_gets_no_unneeded_secrets_and_drops_privileges():
     assert "no-new-privileges:true" in backend["security_opt"] and backend["cap_drop"] == ["ALL"]
 
 
+def test_redis_is_private_password_protected_and_required_healthy_for_backend():
+    compose = _compose()
+    services = compose["services"]
+    redis = services["redis"]
+    backend = services["backend"]
+
+    assert "ports" not in redis
+    assert redis["networks"] == ["cache"]
+    assert backend["networks"] == ["internal", "cache"]
+    assert "--requirepass" in redis["command"]
+    assert backend["environment"]["REDIS_URL"].startswith("redis://:")
+    assert backend["depends_on"]["redis"]["condition"] == "service_healthy"
+    assert compose["networks"]["cache"]["internal"] is True
+
+
 def test_every_service_has_limits_healthchecks_and_pinned_images():
     services = _compose()["services"]
-    for name in ("postgres", "backend", "web"):
+    for name in ("postgres", "redis", "backend", "web"):
         limits = services[name]["deploy"]["resources"]["limits"]
         assert limits["cpus"] and limits["memory"]
-    assert "healthcheck" in services["postgres"] and "healthcheck" in services["web"]
+    assert "healthcheck" in services["postgres"] and "healthcheck" in services["redis"] and "healthcheck" in services["web"]
     assert "HEALTHCHECK" in BACKEND_DOCKERFILE.read_text(encoding="utf-8")
     assert re.fullmatch(r"pgvector/pgvector:\d+\.\d+\.\d+-pg16", services["postgres"]["image"])
+    assert re.fullmatch(r"redis:\d+\.\d+\.\d+-alpine", services["redis"]["image"])
     for dockerfile in (BACKEND_DOCKERFILE, FRONTEND_DOCKERFILE):
         for image in re.findall(r"^FROM (\S+)", dockerfile.read_text(encoding="utf-8"), re.MULTILINE):
             assert re.search(r":\d+\.\d+\.\d+", image), f"{dockerfile.name}: {image} is not pinned"
@@ -317,3 +344,60 @@ def test_backend_image_installs_the_hashed_lock_without_unused_vulnerable_packag
                         re.MULTILINE)
     normalise = lambda n: re.sub(r"[-_.]+", "-", n.lower())
     assert {normalise(n) for n in wanted} <= {normalise(n) for n in pinned}
+
+
+def test_public_root_route_hides_service_name_version_and_docs_path_in_production(monkeypatch):
+    from backend.app import main
+
+    monkeypatch.setattr(main, "_production", True)
+    assert main.root() == {"status": "running"}
+    monkeypatch.setattr(main, "_production", False)
+    assert "version" in main.root()
+
+
+def _env_keys(path):
+    return {line.split("=", 1)[0].strip() for line in path.read_text(encoding="utf-8").splitlines()
+            if "=" in line and not line.lstrip().startswith("#")}
+
+
+def test_every_required_compose_variable_is_in_the_production_and_staging_templates():
+    """docker-compose.prod.yml fails fast on `${VAR:?...}`; the templates must list each such variable so an
+    operator is told to fill it in (a missing key only surfaces at `docker compose up`)."""
+    required = set(re.findall(r"\$\{(\w+):\?", PROD_COMPOSE.read_text(encoding="utf-8")))
+    assert "REDIS_PASSWORD" in required
+    for template in (".env.production.example", ".env.staging.example"):
+        missing = required - _env_keys(ROOT_DIR / template)
+        assert not missing, f"{template} lacks {sorted(missing)}"
+
+
+def test_staging_env_initialiser_generates_the_redis_password():
+    script = (ROOT_DIR / "scripts" / "staging" / "init-env.sh").read_text(encoding="utf-8")
+    assert re.search(r"'REDIS_PASSWORD':\s*secrets\.token_hex\(", script)
+
+
+def _load_yaml_rejecting_duplicate_keys(path):
+    """PyYAML keeps the last of two equal keys without a word, but Docker Compose refuses the file."""
+    class StrictLoader(yaml.SafeLoader):
+        pass
+
+    def construct(loader, node, deep=False):
+        seen = set()
+        for key_node, _value in node.value:
+            key = loader.construct_object(key_node, deep=deep)
+            assert key not in seen, f"duplicate key {key!r} at line {key_node.start_mark.line + 1}"
+            seen.add(key)
+        return yaml.SafeLoader.construct_mapping(loader, node, deep)
+
+    StrictLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, construct)
+    return yaml.load(path.read_text(encoding="utf-8"), Loader=StrictLoader)
+
+
+def test_compose_files_have_no_duplicate_keys():
+    for name in ("docker-compose.prod.yml", "docker-compose.yml", "docker-compose.e2e.yml"):
+        _load_yaml_rejecting_duplicate_keys(ROOT_DIR / name)
+
+
+def test_backend_grace_period_outlasts_the_shutdown_drain():
+    grace = _load_yaml_rejecting_duplicate_keys(PROD_COMPOSE)["services"]["backend"]["stop_grace_period"]
+    seconds = int(re.fullmatch(r"(\d+)s", str(grace)).group(1))
+    assert seconds > Settings().SHUTDOWN_DRAIN_SECONDS, "running answers would be killed before they are saved"

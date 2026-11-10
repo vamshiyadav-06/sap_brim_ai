@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from backend.app.main import app
 from backend.app.security.auth import get_current_user
-from backend.app.schemas.message import DocumentAttachment, MessageCreate
+from backend.app.schemas.message import MAX_ATTACHMENTS, DocumentAttachment, MessageCreate
 from backend.app.services.document_extractor import extract_document
 from backend.app.services.llm_service import LLMService
 from backend.app.services.rag_service import RAGService
@@ -149,7 +149,7 @@ def test_attachment_payload_limits_and_supported_format_validation():
         extract_document("legacy.doc", b"not supported")
     with pytest.raises(ValueError):
         MessageCreate(content="Question", attachments=[
-            DocumentAttachment(name=f"{index}.txt", text="text") for index in range(6)
+            DocumentAttachment(name=f"{index}.txt", text="text") for index in range(MAX_ATTACHMENTS + 1)
         ])
 
     extracted = extract_document("large.txt", ("SAP BRIM details. " * 10000).encode())

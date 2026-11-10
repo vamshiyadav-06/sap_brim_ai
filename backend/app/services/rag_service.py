@@ -18,7 +18,11 @@ from backend.app.services import token_meter
 from backend.app.services.search import APPROVED_SAP_DOMAINS
 from backend.app.services.evidence_selection_service import evidence_selection_service
 from backend.app.services.answer_planner import answer_planner
-from backend.app.services.answer_style_router import answer_style_router, is_solution_design_question
+from backend.app.services.answer_style_router import (
+    answer_style_router,
+    is_cross_component_handoff,
+    is_solution_design_question,
+)
 from backend.app.services.followup_service import followup_service
 from backend.app.services.llm_service import (
     GenerationResult,
@@ -37,12 +41,31 @@ from backend.app.services.evidence_markers import (
 )
 from backend.app.services.answer_guard import apply_guard
 from backend.app.services import confidence_scoring
-from backend.app.services.conversation_memory_service import conversation_memory_service, MemoryIntent
-from backend.app.services.query_router import query_router, QueryRoute
+from backend.app.services.conversation_memory_service import (
+    RECENT_CONTEXT_LIMIT,
+    conversation_memory_service,
+    MemoryIntent,
+)
+from backend.app.services.query_router import query_router, QueryRoute, QueryRoutingDecision
+from backend.app.services.intent_analyzer import intent_analyzer
+from backend.app.services import document_generator
 from backend.app.security.access import retrieval_groups
 from backend.app.security.log_safety import privacy_fingerprint
 
 logger = logging.getLogger(__name__)
+
+
+def _needs_conversation_summary(memory_intent: str, chat_history: Optional[List[Dict[str, Any]]]) -> bool:
+    if memory_intent in {
+        MemoryIntent.CROSS_CONVERSATION_RECALL,
+        MemoryIntent.HISTORY_RECALL,
+        MemoryIntent.MIXED,
+    }:
+        return True
+    if memory_intent in {MemoryIntent.FIRST_MESSAGE_LOOKUP, MemoryIntent.LAST_MESSAGE_LOOKUP}:
+        return False
+    return len(chat_history or []) >= RECENT_CONTEXT_LIMIT
+
 
 # Scenario questions list their topics in one sentence: "a solution covering SOM, CC rating, ..., while
 # handling billing discrepancies and production failures". Each topic is retrieved on its own.
@@ -66,6 +89,9 @@ OPERATIONS_ASPECTS = [
 ]
 MAX_SCENARIO_ASPECTS = 11
 PASSAGES_PER_ASPECT = 2
+# Cross-component handoffs need a wider RRF window to retrieve process and receiving-ledger evidence.
+CROSS_COMPONENT_RETRIEVAL_TOP_K = 50
+CROSS_COMPONENT_RERANK_TOP_K = 8
 # Web/repository search runs once per part; for scenario questions only the worst-covered parts are searched.
 MAX_EXTERNAL_SEARCH_ASPECTS = 3
 
@@ -281,8 +307,11 @@ class RAGService:
         aspects = self.split_question_aspects(query)
         if len(aspects) == 1:
             retrieve = self.retrieval.hybrid_search if hybrid else self.retrieval.retrieve
-            candidates = retrieve(db, query, top_k=top_k, allowed_groups=allowed_groups)
-            ranked, score, _ = reranking_service.rerank_kb(query, candidates, top_n=settings.RERANK_TOP_K)
+            cross_component = is_cross_component_handoff(query)
+            retrieval_top_k = max(top_k, CROSS_COMPONENT_RETRIEVAL_TOP_K) if cross_component else top_k
+            rerank_top_k = max(settings.RERANK_TOP_K, CROSS_COMPONENT_RERANK_TOP_K) if cross_component else settings.RERANK_TOP_K
+            candidates = retrieve(db, query, top_k=retrieval_top_k, allowed_groups=allowed_groups)
+            ranked, score, _ = reranking_service.rerank_kb(query, candidates, top_n=rerank_top_k)
             for item in ranked:
                 item["question_aspect"] = query
             return ranked, score, [{"aspect": query, "score": round(float(score), 4), "evidence_count": len(ranked)}]
@@ -457,9 +486,17 @@ class RAGService:
         verification: Optional[Dict[str, Any]] = None,
         answer_plan=None,
     ):
-        """Verify -> repair once -> deterministic guard -> re-verify before publication."""
+        """Verify -> repair once -> deterministic guard -> re-verify before publication.
+        In reference mode the passages are only reference notes, so the verification stays a diagnostic
+        (admin-only score and status) and the answer is neither repaired nor stripped."""
         if verification is None:
             verification = grounding_service.verify_answer(query, answer, passages, source_type=source_type)
+        if settings.REFERENCE_MODE_ENABLED:
+            final_answer = remove_invalid_markers(answer, valid_ids(passages))
+            if not getattr(settings, "INLINE_EVIDENCE_MARKERS_ENABLED", True):
+                final_answer = strip_markers(final_answer)
+            repair = {"attempted": False, "adopted": False, "guard_applied": False, "removed_claims": 0}
+            return filter_generated_links(final_answer), verification, repair, verification.get("verification_status", "partial")
         repair = {"attempted": False, "adopted": False, "guard_applied": False, "removed_claims": 0}
         final_answer = answer
 
@@ -981,11 +1018,14 @@ class RAGService:
         elif chat_history:
             chat_history = chat_history[-20:]
 
-        summary = conversation_memory_service.get_chat_summary(db, chat_id) if chat_id else None
         historical_memory: List[Dict[str, Any]] = []
 
         # Check for conversation memory intent (exact first question, history recall, cross-conversation)
         memory_intent = conversation_memory_service.classify_intent(query, chat_history=chat_history)
+        summary = (
+            conversation_memory_service.get_chat_summary(db, chat_id)
+            if chat_id and _needs_conversation_summary(memory_intent, chat_history) else None
+        )
 
         if memory_intent == MemoryIntent.FIRST_MESSAGE_LOOKUP:
             first_msg = conversation_memory_service.get_first_user_message(db, chat_id) if chat_id else None
@@ -1170,8 +1210,9 @@ class RAGService:
                 exclude_message_ids=exclude_ids, cross_conversation=False, top_k=5
             )
 
-        # 1. Intelligent Query Routing Execution
-        routing_decision = query_router.route(query, chat_history=chat_history)
+        # 1. Intelligent Query Routing Execution: the LLM reads the intent first (also fixes spelling)
+        query, analysis, routing_decision = self._route_with_intent(query, chat_history, has_attachments)
+        direct_query = analysis.standalone_question if analysis else query
         selected_route = routing_decision.route
         logger.info(
             f"[QueryRouter] Route: {selected_route.value} | "
@@ -1208,10 +1249,28 @@ class RAGService:
                 "selection_summary": "Handled directly via LLM without retrieval (emotional/casual query)."
             }
 
+        # Path G: a question that is not about SAP -> answered by the LLM, not refused
+        if selected_route == QueryRoute.GENERAL:
+            logger.info("[RAG] Fast-path routing: general (direct LLM, no retrieval required) | Streamed: False")
+            formats = routing_decision.output_formats
+            reply = llm_service.generate_general_reply(
+                document_generator.query_with_instructions(query, formats) if formats else query,
+                chat_history=chat_history, regeneration_index=regeneration_index)
+            if formats and reply != UNAVAILABLE_RESPONSE:
+                reply = self._documents_message(reply, formats, user_id, query)
+            return self._direct_payload(reply, selected_route, "Answered directly via LLM (general, non-SAP question).")
+
+        # Path K: genuinely ambiguous -> one clarifying question
+        if selected_route == QueryRoute.CLARIFICATION:
+            return self._direct_payload(
+                analysis.clarification_question, selected_route, "Asked the user to clarify an ambiguous question.",
+                source_type="conversational",
+            )
+
         # Path B: Simple Conceptual SAP Questions -> Direct LLM (Bypass RAG completely)
         if not has_attachments and settings.SIMPLE_SAP_FAST_PATH_ENABLED and selected_route == QueryRoute.SIMPLE_SAP:
             logger.debug("RAG route=simple_sap query_hash=%s query_length=%d", privacy_fingerprint(query), len(query or ""))
-            simple_sap_reply = llm_service.generate_simple_sap_reply(query, chat_history=chat_history)
+            simple_sap_reply = llm_service.generate_simple_sap_reply(direct_query, chat_history=chat_history)
             follow_ups = followup_service.generate_starter_followups()
             elapsed_ms = round((time.perf_counter() - start_time) * 1000, 2)
             logger.info(
@@ -1276,9 +1335,81 @@ class RAGService:
             db, query, chat_history=chat_history, attachments=attachments, summary=summary,
             historical_memory=historical_memory, routing_decision=routing_decision, start_time=start_time,
             access_groups=access_groups,
+            analysis=analysis,
+            owner_id=user_id,
             streamed=False,
             regeneration_index=regeneration_index,
         ))
+
+    def _route_with_intent(self, query: str, chat_history, has_attachments: bool):
+        """
+        The first LLM call of a Scholar question: intent and spelling by meaning (intent_analyzer), then the
+        processing path. Returns (question to use from here on, analysis or None, routing decision).
+        Without an analysis (attachments, analyzer off or unavailable) the rule-based router decides as before.
+        """
+        analysis = None if has_attachments else intent_analyzer.analyze(query, chat_history)
+        formats = [] if has_attachments else document_generator.requested_formats(analysis, query)
+        if analysis is None:
+            base = query_router.route(query, chat_history=chat_history)
+            if formats and base.route in (QueryRoute.SIMPLE_SAP, QueryRoute.MIXED_QUERY, QueryRoute.EMOTIONAL_CASUAL):
+                # A document is written from retrieved evidence, never from the short fast paths.
+                base = QueryRoutingDecision(route=QueryRoute.COMPLEX_SAP, reason="Document request", cleaned_query=query, requires_retrieval=True)
+            base.output_formats = formats if base.route in (QueryRoute.COMPLEX_SAP, QueryRoute.GENERAL) else []
+            return query, None, base
+        corrected = analysis.corrected_question
+        if is_company_question(query) or is_company_question(corrected):
+            # The fixed Clyptus profile answers these (in the shared pipeline); not a general question.
+            return corrected, None, query_router.route(corrected, chat_history=chat_history)
+
+        def decision(route, reason, retrieval=False, cleaned=corrected):
+            return QueryRoutingDecision(route=route, reason=reason, cleaned_query=cleaned, requires_retrieval=retrieval,
+                                        output_formats=formats if route in (QueryRoute.COMPLEX_SAP, QueryRoute.GENERAL) else [])
+
+        if analysis.needs_clarification:
+            return corrected, analysis, decision(QueryRoute.CLARIFICATION, "Genuinely ambiguous; asking the user")
+        if analysis.small_talk:
+            return corrected, analysis, decision(QueryRoute.EMOTIONAL_CASUAL, "LLM: greeting or small talk")
+        if not analysis.about_sap:
+            return corrected, analysis, decision(QueryRoute.GENERAL, "LLM: general question, not about SAP")
+        base = query_router.route(analysis.standalone_question, chat_history=chat_history)
+        if base.route in (QueryRoute.SIMPLE_SAP, QueryRoute.MIXED_QUERY) and not formats:
+            return corrected, analysis, base
+        return corrected, analysis, decision(
+            QueryRoute.COMPLEX_SAP, "LLM: SAP question for the retrieval pipeline", True, analysis.standalone_question
+        )
+
+    @staticmethod
+    def _documents_message(content: str, formats: List[str], owner_id, request: str) -> str:
+        """The chat message for a document request: the files are created and linked; if that fails, the content itself."""
+        try:
+            return document_generator.create_documents(owner_id, content, formats, request_title=request)[0]
+        except Exception as exc:
+            logger.warning("Document creation failed (%s)", type(exc).__name__)
+            return content
+
+    @staticmethod
+    def _direct_payload(answer: str, route: QueryRoute, summary: str, source_type: str = "direct_llm") -> Dict[str, Any]:
+        """The result of a path that answers without retrieval (general answer, clarifying question)."""
+        unavailable = answer == UNAVAILABLE_RESPONSE
+        return {
+            "answer": answer,
+            "source_type": "unavailable" if unavailable else source_type,
+            "grounding_score": None,
+            "is_in_rag_pipeline": False,
+            "kb_score": 0.0,
+            "web_score": 0.0,
+            "winning_score": 0.0,
+            "selected_source": source_type,
+            "route": route.value,
+            "verification_status": "unavailable" if unavailable else "unverified",
+            "internal_evidence_confidence": 0.0,
+            "selected_evidence_quality": 0.0,
+            "external_search_used": False,
+            "citations": [],
+            "web_sources": [],
+            "follow_up_questions": [],
+            "selection_summary": summary,
+        }
 
     @staticmethod
     def _drain(events: Generator[Dict[str, Any], None, Dict[str, Any]]) -> Dict[str, Any]:
@@ -1303,6 +1434,8 @@ class RAGService:
         streamed: bool,
         access_groups=None,
         regeneration_index: Optional[int] = None,
+        analysis=None,
+        owner_id=None,
     ) -> Generator[Dict[str, Any], None, Dict[str, Any]]:
         """
         The retrieval-backed answer path shared by process_query and stream_query (AUDIT_REPORT F-27):
@@ -1315,9 +1448,14 @@ class RAGService:
 
         yield {"type": "status", "stage": "thinking", "message": "Resolving conversation context..."}
 
-        resolution = query_rewriter.resolve_query(query, chat_history=chat_history)
-        is_follow_up = resolution.get("is_follow_up", False)
-        cleaned_query = resolution.get("resolved_query", query).strip()
+        if analysis is not None:
+            # The intent analyzer already corrected the question and resolved it against the conversation.
+            is_follow_up = analysis.is_follow_up
+            cleaned_query = analysis.standalone_question.strip()
+        else:
+            resolution = query_rewriter.resolve_query(query, chat_history=chat_history)
+            is_follow_up = resolution.get("is_follow_up", False)
+            cleaned_query = resolution.get("resolved_query", query).strip()
 
         # Strict SAP scope gate; uploaded attachments are analysed regardless of topic.
         target_check_query = cleaned_query if is_follow_up else query.strip()
@@ -1340,7 +1478,7 @@ class RAGService:
                 "follow_up_questions": [],
                 "selection_summary": "Answered from the fixed Clyptus company profile.",
             }
-        if not has_attachments:
+        if not has_attachments and analysis is None:  # with an analysis the LLM already judged the topic
             is_sap, refusal_msg = sap_classifier.classify(target_check_query)
             if not is_sap:
                 logger.info("Query rejected by SAP classifier (route=%s)", selected_route.value)
@@ -1473,7 +1611,12 @@ class RAGService:
                 query=cleaned_query,
                 internal_candidates=top_kb_chunks,
                 external_candidates=web_results,
-                internal_confidence_data=internal_confidence_data
+                internal_confidence_data=internal_confidence_data,
+                max_internal_passages=(
+                    CROSS_COMPONENT_RERANK_TOP_K
+                    if is_cross_component_handoff(cleaned_query)
+                    else None
+                ),
             )
             selected_passages = evidence_selection.get("selected_passages") or top_kb_chunks or web_results or []
             selected_source_type = evidence_selection.get("source_type") or "knowledge_base"
@@ -1505,6 +1648,9 @@ class RAGService:
             )
         selected_passages = self._prepare_evidence(selected_passages)
         guidance = self._generation_guidance(scope, selected_passages)
+        document_formats = list(getattr(routing_decision, "output_formats", []) or [])
+        if document_formats:  # the user asked for a file: the model writes the document itself
+            guidance = (f"{guidance}\n\n" if guidance else "") + document_generator.content_instructions(document_formats)
         # Layout only (answer type, tables, headings); routed once and reused by generation and repair.
         answer_plan = answer_style_router.route(cleaned_query, selected_passages, raw_question=query)
 
@@ -1561,7 +1707,7 @@ class RAGService:
             cleaned_query, candidate_answer, selected_passages, selected_source_type, scope, guidance,
             verification=initial_verification, answer_plan=answer_plan,
         )
-        if not final_verification.get("passes_grounding_gate", False):
+        if not settings.REFERENCE_MODE_ENABLED and not final_verification.get("passes_grounding_gate", False):
             retry_web = (
                 not should_trigger_tavily
                 and settings.AUTO_MULTI_SOURCE_FALLBACK
@@ -1652,6 +1798,9 @@ class RAGService:
                 relevant_images = web_search_service.search_sap_images(cleaned_query)
             except Exception as e:
                 logger.warning(f"Visual search failed: {e}")
+
+        if document_formats and final_answer.strip() != UNAVAILABLE_RESPONSE:
+            final_answer = self._documents_message(final_answer, document_formats, owner_id, cleaned_query)
 
         # Mixed emotional + technical question: brief acknowledgment before the verified answer.
         if selected_route == QueryRoute.MIXED_QUERY and routing_decision.emotional_part:
@@ -1776,11 +1925,14 @@ class RAGService:
         elif chat_history:
             chat_history = chat_history[-20:]
 
-        summary = conversation_memory_service.get_chat_summary(db, chat_id) if chat_id else None
         historical_memory: List[Dict[str, Any]] = []
 
         # Check for conversation memory intent (exact first question, history recall, cross-conversation)
         memory_intent = conversation_memory_service.classify_intent(query, chat_history=chat_history)
+        summary = (
+            conversation_memory_service.get_chat_summary(db, chat_id)
+            if chat_id and _needs_conversation_summary(memory_intent, chat_history) else None
+        )
 
         if memory_intent == MemoryIntent.FIRST_MESSAGE_LOOKUP:
             first_msg = conversation_memory_service.get_first_user_message(db, chat_id) if chat_id else None
@@ -2005,8 +2157,9 @@ class RAGService:
                 exclude_message_ids=exclude_ids, cross_conversation=False, top_k=5
             )
 
-        # STAGE 0: Intelligent Query Routing Execution
-        routing_decision = query_router.route(query, chat_history=chat_history)
+        # STAGE 0: Intelligent Query Routing Execution: the LLM reads the intent first (also fixes spelling)
+        query, analysis, routing_decision = self._route_with_intent(query, chat_history, has_attachments)
+        direct_query = analysis.standalone_question if analysis else query
         selected_route = routing_decision.route
         logger.info(
             f"[QueryRouter] Route: {selected_route.value} | "
@@ -2057,6 +2210,34 @@ class RAGService:
             }
             return
 
+        # Path G: a question that is not about SAP -> streamed by the LLM, not refused
+        if selected_route == QueryRoute.GENERAL:
+            logger.info("[RAG] Fast-path routing: general (direct LLM, no retrieval required) | Streamed: True")
+            formats = routing_decision.output_formats
+            yield {"type": "status", "stage": "generating", "message": "Creating your document..." if formats else "Generating response..."}
+            token_buffer = ""
+            for token in llm_service.stream_general_reply(
+                    document_generator.query_with_instructions(query, formats) if formats else query,
+                    chat_history=chat_history, regeneration_index=regeneration_index):
+                token_buffer += token
+                if not formats:
+                    yield {"type": "token", "content": token}
+            if formats:
+                if token_buffer.strip() != UNAVAILABLE_RESPONSE:
+                    token_buffer = self._documents_message(token_buffer, formats, user_id, query)
+                yield from self._verified_token_events(token_buffer)
+            yield {"type": "done", **self._direct_payload(
+                token_buffer, selected_route, "Answered directly via LLM (general, non-SAP question).")}
+            return
+
+        # Path K: genuinely ambiguous -> one clarifying question
+        if selected_route == QueryRoute.CLARIFICATION:
+            question = analysis.clarification_question
+            yield {"type": "token", "content": question}
+            yield {"type": "done", **self._direct_payload(
+                question, selected_route, "Asked the user to clarify an ambiguous question.", source_type="conversational")}
+            return
+
         # Path B: Simple Conceptual SAP Questions -> Direct LLM Stream (Bypass RAG completely)
         if not has_attachments and settings.SIMPLE_SAP_FAST_PATH_ENABLED and selected_route == QueryRoute.SIMPLE_SAP:
             logger.info("[RAG] Fast-path routing: simple_sap (direct LLM, no retrieval required)")
@@ -2066,7 +2247,7 @@ class RAGService:
                 "message": "Generating response..."
             }
             token_buffer = ""
-            for token in llm_service.stream_simple_sap_reply(query, chat_history=chat_history, regeneration_index=regeneration_index):
+            for token in llm_service.stream_simple_sap_reply(direct_query, chat_history=chat_history, regeneration_index=regeneration_index):
                 token_buffer += token
                 yield {
                     "type": "token",
@@ -2156,6 +2337,8 @@ class RAGService:
             db, query, chat_history=chat_history, attachments=attachments, summary=summary,
             historical_memory=historical_memory, routing_decision=routing_decision, start_time=start_time,
             access_groups=access_groups,
+            analysis=analysis,
+            owner_id=user_id,
             streamed=True,
             regeneration_index=regeneration_index,
         )

@@ -65,6 +65,8 @@ class TavilySearchProvider:
             if exclude_domains:
                 kwargs["exclude_domains"] = exclude_domains
 
+            # An explicit, short timeout: the SDK default is 60 s, which would hold a user request that long.
+            kwargs["timeout"] = int(settings.WEB_SEARCH_TIMEOUT_SECONDS)
             response = self._client.search(**kwargs)
             results = response.get("results", []) if isinstance(response, dict) else []
 
@@ -108,6 +110,7 @@ class TavilySearchProvider:
             )
             if include_domains:
                 search_kwargs["include_domains"] = include_domains
+            search_kwargs["timeout"] = int(settings.WEB_SEARCH_TIMEOUT_SECONDS)
             response = self._client.search(**search_kwargs)
             raw_images = response.get("images") or response.get("image_results") or []
             hits: List[ImageHit] = []

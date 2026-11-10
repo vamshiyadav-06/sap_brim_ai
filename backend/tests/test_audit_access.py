@@ -34,6 +34,11 @@ RESTRICTED_GROUP = "finance-test"
 def two_documents():
     init_db()
     db = SessionLocal()
+    # An aborted earlier run (killed process, failed teardown) leaves its audit_* documents in the shared
+    # *_test database; they would take part in this module's retrieval queries. conftest guarantees this is
+    # a *_test database, so removing only these fixture-owned rows is safe.
+    db.query(Document).filter(Document.filename.like("audit\\_%", escape="\\")).delete(synchronize_session=False)
+    db.commit()
     open_doc = Document(filename=f"audit_open_{uuid.uuid4().hex}.pdf", title="Open", file_hash="0" * 64,
                         allowed_groups=["all"], source_tier="official_sap")
     secret_doc = Document(filename=f"audit_secret_{uuid.uuid4().hex}.pdf", title="Secret", file_hash="1" * 64,
@@ -171,8 +176,8 @@ BODY = {"email": "newuser@example.com", "name": "New User", "password": "long-en
 # Owner decision (2026-11-04, F-01): individuals sign up themselves with no code; only organisations
 # use the Super-Admin-issued activation code (docs/ORGANISATION_PORTAL.md).
 
-def test_f01_registration_is_open_by_default():
-    assert Settings.model_fields["REGISTRATION_ENABLED"].default is True
+def test_f01_registration_is_closed_by_default():
+    assert Settings.model_fields["REGISTRATION_ENABLED"].default is False
 
 
 def test_f01_individual_sign_up_needs_no_code_and_does_not_sign_in(reg_client):

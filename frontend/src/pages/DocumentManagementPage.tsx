@@ -1095,7 +1095,7 @@ export const DocumentManagementPage: React.FC = () => {
 
             <button
               onClick={() => setShowSummaryModal(false)}
-              className="w-full py-2.5 rounded-xl font-bold text-xs bg-slate-900 dark:bg-white text-white dark:text-slate-900 hover:opacity-90 transition cursor-pointer shadow-md"
+              className="w-full py-2.5 rounded-xl font-bold text-xs bg-orange-600 !text-white hover:bg-orange-500 transition cursor-pointer shadow-md"
             >
               Done & View Knowledge Base
             </button>

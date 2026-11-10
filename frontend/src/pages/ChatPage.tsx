@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { useParams, useNavigate, useLocation, useSearchParams } from 'react-router-dom';
-import type { ChatMode, Message, DocumentAttachment, TokenUsage } from '../types';
+import { DEFAULT_CHAT_MODE, type ChatMode, type Message, type DocumentAttachment, type TokenUsage } from '../types';
 import { ChatMessage } from '../components/chat/ChatMessage';
 import { ChatSavingsLine } from '../components/chat/ChatSavingsLine';
 import { recallTokenWallet, rememberTokenWallet, type TokenWallet } from '../components/chat/TokenBalance';
@@ -65,7 +65,7 @@ export const ChatPage: React.FC = () => {
   const [messages, setMessages] = useState<Message[]>([]);
   // This chat's answer is still generating after the user left the chat and came back (see answersInProgress).
   const [backgroundAnswer, setBackgroundAnswer] = useState(false);
-  const [chatMode, setChatMode] = useState<ChatMode>('sprint');
+  const [chatMode, setChatMode] = useState<ChatMode>(DEFAULT_CHAT_MODE);
   const [isLoading, setIsLoading] = useState(false);
   const [streamingContent, setStreamingContent] = useState<string | null>(null);
   const [streamingStage, setStreamingStage] = useState<string | null>(null);
@@ -171,7 +171,7 @@ export const ChatPage: React.FC = () => {
     setStreamingMeta(null);
     setSavedToast(null);
     setIsUserScrolledUp(false);
-    setChatMode('sprint');
+    setChatMode(DEFAULT_CHAT_MODE);
 
     if (conversationId) {
       const failure = answersInProgress.takeFailure(conversationId);
@@ -296,7 +296,7 @@ export const ChatPage: React.FC = () => {
     );
   };
 
-  // Switching Low/High applies to the next question; a running answer keeps going.
+  // Switching modes applies to the next question; a running answer keeps going.
   const handleModeChange = (nextMode: ChatMode) => {
     if (nextMode === chatMode) return;
     setChatMode(nextMode);

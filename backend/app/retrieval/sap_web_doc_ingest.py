@@ -19,6 +19,7 @@ import re
 import json
 import hashlib
 import logging
+import urllib.parse
 import urllib.request
 import urllib.error
 from html.parser import HTMLParser
@@ -157,6 +158,9 @@ class SAPWebDocIngestService:
         Fetches web documentation page respecting access controls and HTTP policies.
         Returns: (html_text, status_code, error_message)
         """
+        # Only http(s): urlopen would also read file: and custom schemes (Bandit B310).
+        if urllib.parse.urlparse(url).scheme.lower() not in ("http", "https"):
+            return None, None, "Only http and https URLs can be fetched."
         req = urllib.request.Request(
             url,
             headers={

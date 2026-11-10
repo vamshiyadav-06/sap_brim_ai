@@ -122,6 +122,23 @@ _HOW_WOULD_YOU = re.compile(
     r"|set\s+up|support|deliver|run|manage)\b",
     re.I,
 )
+_BRIM_COMPONENTS = {
+    "SOM": re.compile(r"\b(?:subscription\s+order\s+management|som)\b", re.I),
+    "CC": re.compile(r"\b(?:convergent\s+charging|cc)\b", re.I),
+    "CI": re.compile(r"\b(?:convergent\s+invoicing|ci)\b", re.I),
+    "FI-CA": re.compile(r"\b(?:fi[- ]?ca|contract\s+accounts?\s+receivable\s+and\s+payable)\b", re.I),
+}
+_COMPONENT_HANDOFF = re.compile(
+    r"\b(?:post|transfer|send|move|flow|integrat\w*|consolidat\w*|map|bill|process|create|generate)\b",
+    re.I,
+)
+
+
+def is_cross_component_handoff(question: str) -> bool:
+    """Recognize a process question that explicitly crosses two or more BRIM components."""
+    text = question or ""
+    components = sum(bool(pattern.search(text)) for pattern in _BRIM_COMPONENTS.values())
+    return components >= 2 and bool(_COMPONENT_HANDOFF.search(text))
 
 
 def is_solution_design_question(text: str) -> bool:
@@ -175,6 +192,8 @@ class AnswerStyleRouter:
     def _route(self, question: str, evidence: List[Dict[str, Any]], raw_question: Optional[str]) -> AnswerPlan:
         text = question if not raw_question or raw_question.strip() == question.strip() else f"{raw_question}\n{question}"
         archetype = answer_planner.plan_answer(question)["question_type"]
+        if archetype in {"conceptual", "tcode_table", "version_specific", "followup"} and is_cross_component_handoff(question):
+            archetype = "integration"
         has_attachment = any(e.get("source_type") == "attached_document" for e in evidence)
         explicit = self._explicit_requests(text)
 
@@ -324,7 +343,7 @@ class AnswerStyleRouter:
             return "concise"
         if "detailed" in explicit:
             return "detailed"
-        if archetype in ("upgrade_invoice_reconciliation", "production_incident") or answer_type in ("solution_design", "production_incident"):
+        if archetype in ("upgrade_invoice_reconciliation", "production_incident", "integration") or answer_type in ("solution_design", "production_incident"):
             return "detailed"
         if answer_type == "direct_answer":
             return "concise"

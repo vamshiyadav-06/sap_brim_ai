@@ -66,7 +66,7 @@ export const LoginVisual: React.FC<{ className?: string }> = ({ className }) => 
     <circle cx="176" cy="216" r="9" fill="#ff6600" />
     <path d="M171.5 216.5l3 3l6-6.5" fill="none" stroke="#0f172a" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
     <text x="194" y="220" fontSize="12.5" fontWeight="700" className="lv-text lv-label">Verified answer</text>
-    <text x="392" y="220" fontSize="9.5" textAnchor="end" fill="#ff6600" className="lv-label">High</text>
+    <text x="392" y="220" fontSize="9.5" textAnchor="end" fill="#ff6600" className="lv-label">RAG</text>
     <g fontSize="9.5" className="lv-muted lv-label">
       <text x="170" y="247"><tspan className="lv-text" fontWeight="700">SOM</tspan> captures the subscription order</text>
       <text x="170" y="263"><tspan className="lv-text" fontWeight="700">CC</tspan> rates usage and recurring fees</text>

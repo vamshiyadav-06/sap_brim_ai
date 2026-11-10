@@ -5,11 +5,11 @@ import { TokenBalance, refillText } from './TokenBalance';
 const NOW = Date.parse('2026-11-05T12:00:00Z');
 
 describe('TokenBalance', () => {
-  it('shows what is left of the 1,000 and when it refills', () => {
+  it('shows what is left of the 100 and when it refills', () => {
     const html = renderToStaticMarkup(
-      <TokenBalance wallet={{ balance: 998.75, refillAt: '2026-11-07T12:00:00' }} now={NOW} />,
+      <TokenBalance wallet={{ balance: 98.75, refillAt: '2026-11-07T12:00:00' }} now={NOW} />,
     );
-    expect(html).toContain('998.75 of 1,000 tokens left');
+    expect(html).toContain('98.75 of 100 tokens left');
     expect(html).toContain('refills in 2 days');
   });
   it('says the tokens are used up at zero, and still says when they come back', () => {

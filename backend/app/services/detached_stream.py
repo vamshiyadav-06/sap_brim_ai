@@ -21,6 +21,8 @@ import threading
 import time
 from typing import Dict, Iterator, Optional
 
+from backend.app.services.capacity import take_current_ticket
+
 logger = logging.getLogger(__name__)
 
 # Matches the stream token lifetime (security/stream_tokens.py): an older id cannot be used to stop anything.
@@ -61,7 +63,16 @@ stream_cancellations = StreamCancellations()
 
 def detached(events: Iterator[str], stream_id: Optional[str] = None) -> Iterator[str]:
     """Yields `events` while running them to completion in a background thread, whether or not anyone is
-    still reading. Context variables (request context, generation context) are carried into the thread."""
+    still reading. Context variables (request context, generation context) are carried into the thread.
+
+    The capacity slot of the request (services/capacity.py), if any, is taken over here: the producer thread
+    releases it when the answer ends, so an answer that outlives the browser still counts as running. This
+    function is deliberately not a generator: it must read the slot in the endpoint's own context, while the
+    generator below only starts later, in the response's context."""
+    return _detached(events, stream_id, take_current_ticket())
+
+
+def _detached(events: Iterator[str], stream_id: Optional[str], ticket) -> Iterator[str]:
     channel: "queue.Queue[object]" = queue.Queue()
     context = contextvars.copy_context()
 
@@ -75,10 +86,16 @@ def detached(events: Iterator[str], stream_id: Optional[str] = None) -> Iterator
         except Exception:  # the answer generators report their own errors; this only guards the thread
             logger.exception("Answer stream failed in the background")
         finally:
-            close = getattr(events, "close", None)
-            if close is not None:
-                close()
-            channel.put(_END)
+            try:
+                close = getattr(events, "close", None)
+                if close is not None:
+                    close()
+            except Exception:
+                logger.exception("Closing the answer stream failed")
+            finally:
+                if ticket is not None:
+                    ticket.release()
+                channel.put(_END)
 
     threading.Thread(target=context.run, args=(produce,), name="answer-stream", daemon=True).start()
     while True:

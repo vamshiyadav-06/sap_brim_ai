@@ -93,3 +93,29 @@ def _reset_model_cooldowns():
     model_cooldowns.clear()
     yield
     model_cooldowns.clear()
+
+
+# Modules that test the strict evidence-only behavior (verify -> repair -> guard -> notice, citation-only
+# prompts). Reference mode is the default; the strict behavior stays available with
+# REFERENCE_MODE_ENABLED=False, and these modules keep guarding it. test_reference_mode.py covers the default.
+_STRICT_GROUNDING_MODULES = {
+    "test_adaptive_rag_pipeline", "test_answer_style_router", "test_audit_rag_pipeline",
+    "test_bp_block_regression", "test_llm_web_fallback_chain", "test_provider_search_fallbacks",
+    "test_solution_design_answers",
+}
+
+
+@pytest.fixture(autouse=True)
+def _reference_mode_per_module(request, monkeypatch):
+    if request.module.__name__.rsplit(".", 1)[-1] in _STRICT_GROUNDING_MODULES:
+        monkeypatch.setattr(settings, "REFERENCE_MODE_ENABLED", False)
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _intent_analyzer_offline(monkeypatch):
+    """The LLM intent analyzer is the first call of every question. Tests run offline, so it reports 'model
+    unavailable' (None) and the rule-based routing answers; test_intent_analysis.py supplies fake replies."""
+    from backend.app.services.llm_service import llm_service
+    monkeypatch.setattr(llm_service, "analyze_question_intent", lambda prompt: None)
+    yield

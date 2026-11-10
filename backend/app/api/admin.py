@@ -1,5 +1,7 @@
 import json
-from datetime import datetime
+import hashlib
+import secrets
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -11,6 +13,7 @@ from backend.app.config import settings
 from backend.app.models.audit_event import AuditEvent
 from backend.app.models.chunk import DocumentChunk
 from backend.app.models.document import Document
+from backend.app.models.security_setting import SecuritySetting
 from backend.app.models.user import User
 from backend.app.schemas.auth import UserResponse
 from backend.app.security.access import normalize_groups
@@ -23,6 +26,99 @@ router = APIRouter(prefix="/admin", tags=["Admin / Developer Ingestion"])
 
 class GroupsUpdate(BaseModel):
     groups: List[str] = Field(..., min_length=1, max_length=50)
+
+
+class RegistrationControlUpdate(BaseModel):
+    registration_enabled: bool
+
+
+@router.get("/security-controls")
+def get_security_controls(admin: User = Depends(get_current_admin_user), db: Session = Depends(get_db)):
+    """Current authentication controls; registration is persisted so it takes effect immediately."""
+    saved = db.query(SecuritySetting).filter(SecuritySetting.id == 1).first()
+    return {
+        "registration_enabled": bool(saved.registration_enabled) if saved is not None else bool(settings.REGISTRATION_ENABLED),
+        "login_max_failures": settings.LOGIN_MAX_FAILURES,
+        "unlock_key_ttl_minutes": settings.LOGIN_UNLOCK_KEY_TTL_MINUTES,
+    }
+
+
+@router.put("/security-controls/registration")
+def update_registration_control(
+    update: RegistrationControlUpdate,
+    request: Request,
+    admin: User = Depends(get_current_admin_user),
+    db: Session = Depends(get_db),
+):
+    saved = db.query(SecuritySetting).filter(SecuritySetting.id == 1).first()
+    if saved is None:
+        saved = SecuritySetting(id=1, registration_enabled=update.registration_enabled)
+        db.add(saved)
+    else:
+        saved.registration_enabled = update.registration_enabled
+    db.commit()
+    audit_log.record(
+        "registration_setting_change",
+        request=request,
+        principal=admin,
+        details={"enabled": update.registration_enabled},
+    )
+    return {"registration_enabled": update.registration_enabled}
+
+
+@router.get("/login-lockouts")
+def list_login_lockouts(
+    admin: User = Depends(get_current_admin_user),
+    db: Session = Depends(get_db),
+):
+    rows = (
+        db.query(User)
+        .filter(User.login_locked_at.isnot(None))
+        .order_by(User.login_locked_at.desc())
+        .limit(200)
+        .all()
+    )
+    return {
+        "users": [
+            {
+                "id": user.id,
+                "name": user.name,
+                "email": user.email,
+                "account_type": user.account_type,
+                "locked_at": user.login_locked_at.isoformat() if user.login_locked_at else None,
+                "key_expires_at": user.login_unlock_key_expires_at.isoformat() if user.login_unlock_key_expires_at else None,
+            }
+            for user in rows
+        ]
+    }
+
+
+@router.post("/users/{user_id}/login-unlock-key")
+def issue_login_unlock_key(
+    user_id: str,
+    request: Request,
+    admin: User = Depends(get_current_admin_user),
+    db: Session = Depends(get_db),
+):
+    user = db.query(User).filter(User.id == user_id).with_for_update().first()
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
+    if user.login_locked_at is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This account is not locked.")
+
+    key = secrets.token_urlsafe(24)
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=max(1, settings.LOGIN_UNLOCK_KEY_TTL_MINUTES))
+    user.login_unlock_key_hash = hashlib.sha256(key.encode("utf-8")).hexdigest()
+    user.login_unlock_key_expires_at = expires_at
+    db.commit()
+    audit_log.record(
+        "login_unlock_key_issue",
+        request=request,
+        principal=admin,
+        target=user.id,
+        details={"expires_at": expires_at.isoformat()},
+    )
+    return {"user_id": user.id, "email": user.email, "key": key, "expires_at": expires_at.isoformat()}
 
 
 @router.post("/documents/ingest")

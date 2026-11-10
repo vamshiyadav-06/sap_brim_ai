@@ -4,6 +4,7 @@ import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { PageMeta } from '../../components/ui/PageMeta';
 import { useAuth } from '../../context/AuthContext';
 import iconOnly from '../../assets/clyptusap-icon.png';
+import { ApiError } from '../../services/api';
 
 export const AdminLoginPage: React.FC = () => {
   const { user, token, adminLogin } = useAuth();
@@ -12,6 +13,8 @@ export const AdminLoginPage: React.FC = () => {
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [unlockKey, setUnlockKey] = useState('');
+  const [unlockRequired, setUnlockRequired] = useState(false);
   const [error, setError] = useState<string | null>(() =>
     new URLSearchParams(window.location.search).get('expired') ? 'Your session has expired. Please sign in again.' : null
   );
@@ -34,9 +37,10 @@ export const AdminLoginPage: React.FC = () => {
       if (!email.trim()) throw new Error('Please enter administrator email address');
       if (!password) throw new Error('Please enter administrator password');
 
-      await adminLogin(email.trim(), password);
+      await adminLogin(email.trim(), password, unlockKey.trim() || undefined);
       navigate('/admin', { replace: true });
     } catch (err: any) {
+      if (err instanceof ApiError && err.status === 423) setUnlockRequired(true);
       setError(
         err.message ||
         'Authentication failed: Please verify your administrator credentials or check system permissions.'
@@ -148,6 +152,24 @@ export const AdminLoginPage: React.FC = () => {
                   />
                 </div>
               </div>
+
+              {unlockRequired && (
+                <div>
+                  <label htmlFor="admin-unlock-key" className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 mb-1.5">
+                    One-time administrator unlock key
+                  </label>
+                  <input
+                    id="admin-unlock-key"
+                    type="text"
+                    required
+                    autoComplete="one-time-code"
+                    value={unlockKey}
+                    onChange={(event) => setUnlockKey(event.target.value)}
+                    placeholder="Ask another administrator for the key"
+                    className="w-full bg-white dark:bg-[#12151f] border border-slate-200/80 dark:border-zinc-700/80 focus:border-amber-500 text-slate-900 dark:text-white rounded-xl px-3.5 py-2.5 text-xs focus:outline-none focus:ring-1 focus:ring-amber-500 transition font-mono"
+                  />
+                </div>
+              )}
 
               <div className="pt-2">
                 <button

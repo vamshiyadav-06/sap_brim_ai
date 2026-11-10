@@ -20,6 +20,22 @@ Embedding provenance follow-up (Phase 4, F-07): configured model/version metadat
 
 Last reviewed: 2026-11-05
 
+Document processing concurrency fix (2026-11-09): the already-running branch no longer re-enters the non-reentrant progress lock; SSE queues are updated on their owning asyncio loop via `call_soon_threadsafe`, with bounded/coalesced snapshots, and lock-taking endpoint calls are offloaded. Focused tests: 7 passed. BullMQ is not present and was not added: current backend is Python/FastAPI and document processing is Python; a Node worker bridge and explicit asynchronous workflow would need separate design. See `NEXT_SESSION.md`.
+
+SAP BRIM RAG quality follow-up (2026-11-09): traced a CI-to-FI-CA question offline. Corrected answer-style intent classification and widened retrieval/reranking/evidence budgets only for component-handoff questions. Added 12-page-referenced source-checked (not SME-validated) dataset rows. The approved local evidence does not establish the queried DFKKKO/DFKKOP role or ERDK-to-posting document table mapping; report those as gaps. Focused suites passed 72 + 14 + 10 tests. The trace did not use an LLM or DB; stage timings are local subset-only. `test_ai_reliability.py` could not collect because `httpx2` is not installed. See root `RAG_QUALITY_AUDIT_REPORT.md` and latest `NEXT_SESSION.md`.
+
+Chat mode update (2026-11-09): new chats default to Scholar, the RAG Pipeline. The High toggle selects Sprint, the direct configured-LLM route. Explanatory text names both behaviors; backend route implementations and mode identifiers remain unchanged. See the latest handoff and `frontend/src/components/chat/WelcomeScreen.test.tsx`.
+
+Security audit follow-up (2026-11-09): registration had drifted open in `Settings`, the production template, and the production Compose frontend build fallback despite earlier notes saying it was closed by default. Defaults are now false, including the frontend Docker build argument; explicit operator opt-in remains possible. See root `SECURITY_AUDIT_REPORT.md`, `SECURITY_REMEDIATION.md`, `SECURITY_TEST_RESULTS.md`, and `SECURITY_DEPLOYMENT_CHECKLIST.md`. Historical credential rotation and deployment verification remain owner actions.
+
+Authentication controls (2026-11-09): the Super Admin dashboard controls public registration at runtime. Five failed passwords lock the account persistently; admin issues a one-use key expiring in 15 minutes, and user must submit that key with the correct password. Migration 0016 is required. The key is returned once to the admin UI and only its hash is stored; pass it to the user through a private channel. Frontend build, focused UI tests, 31 auth tests, and one production template test passed; see `NEXT_SESSION.md`.
+
+RAG latency follow-up (2026-11-09): warm retrieval cache count validation is now amortized to 30 seconds (document API updates still invalidate immediately); unnecessary rolling-summary reads are skipped until history/memory recall needs them. Offline focused latency and reliability suites passed; no live timing measurement was taken.
+
+RAG quality/performance audit (2026-11-09): dense retrieval now uses partial selection for the same top candidate count instead of sorting every corpus score; BM25 likewise selects only its top candidate set. RRF, per-channel candidate limits, final scoring and access filtering are unchanged. Focused hot-path + Scholar latency tests passed (23). A report is in `RAG_QUALITY_AUDIT_REPORT.md`; broad scenario fan-out (up to 11 sequential retrievals), full-history recall scans, synchronous Scholar message embeddings and live provider latency remain items for measurement/scale testing.
+
+Registration UX follow-up (2026-11-09): the registration toggle is now in the Super Admin dashboard top bar so it is visible on every admin tab. Enabled users see Create Account and enter the chatbot immediately after sign-up; disabled users cannot see the option, and the API continues to reject registration.
+
 Security updates 2026-11-05: guest/demo identity was disabled; public registration defaults off in backend and frontend builds; staging gates every route except `/health` behind Caddy Basic auth and binds to loopback until explicitly opened. Access and rotating refresh tokens are server-backed; frontend refresh is deduplicated and temporary backend/network failures retain the cached session. Direct RAG output removes citation and internal scoring/comparison fields for non-admins. Document extraction requires a signed-in user. Review `NEXT_SESSION.md` for incomplete remediation and deployment assumptions.
 
 Setup documentation: `SETUP.md` (repository root) is the single setup, deployment and troubleshooting guide; `README.md` describes the application, architecture and API; `docker.md` covers database access and backups. `docker-setup/README.md` only points to `SETUP.md`. None of them contain real credentials.
@@ -54,7 +70,7 @@ Recent-message window and long-term semantic recall are distinct application-lev
 
 ## Database and safety
 
-**PARTIALLY VERIFIED** - `database.init_db()` applies Alembic revisions 0001 through 0004 when `AUTO_MIGRATE=true`; revision 0004 persists document source tiers. Summary-watermark columns are covered by the baseline migration. `messages.embedding` uses the same configured 384-dimensional vector type as document chunks.
+**PARTIALLY VERIFIED** - `database.init_db()` applies Alembic revisions 0001 through 0016 when `AUTO_MIGRATE=true` (verified on a scratch database 2026-11-09: clean upgrade, 0016 downgrade/re-upgrade, no model/migration column drift; `0001_baseline` cannot be downgraded by design). Summary-watermark columns are covered by the baseline migration. `messages.embedding` uses the same configured 384-dimensional vector type as document chunks.
 
 Ownership checks exist in chat and message routes. On 2026-10-27, `/api/rag/query/stream` was aligned with the synchronous route to return 404 when a supplied chat is not owned by the caller.
 

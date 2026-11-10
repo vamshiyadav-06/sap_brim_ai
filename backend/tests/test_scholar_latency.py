@@ -2,6 +2,7 @@
 for repeatable provider failures, and retrieval cache warm-up off the request path."""
 
 import asyncio
+import importlib
 import threading
 import time
 from types import SimpleNamespace
@@ -12,11 +13,14 @@ from backend.app import main as main_module
 from backend.app.config import settings
 from backend.app.retrieval import multi_source_compare as compare_module
 from backend.app.retrieval.multi_source_compare import MultiSourceComparator
+from backend.app.services.conversation_memory_service import MemoryIntent, RECENT_CONTEXT_LIMIT
+from backend.app.services.rag_service import _needs_conversation_summary
 from backend.app.services import query_rewriter as rewriter_module
 from backend.app.services.llm_service import ModelCooldowns, llm_service, model_cooldowns
 from backend.app.services.retrieval_service import RetrievalService
 
 ASPECTS = ["CI billable item processing", "FI-CA posting of invoicing documents", "Convergent Charging rating"]
+retrieval_module = importlib.import_module("backend.app.services.retrieval_service")
 
 
 def _web_hit(aspect, n):
@@ -278,3 +282,42 @@ def test_startup_warms_the_retrieval_cache_in_the_background(monkeypatch):
     asyncio.run(start_and_stop())
 
     assert scheduled == [0.0]
+
+
+def test_warm_retrieval_index_skips_repeated_chunk_count_queries(monkeypatch):
+    service = RetrievalService()
+    service._cache_chunks = []
+    service._cache_matrix = None
+    service._cache_token_index = {}
+    service._cache_tech_id_index = {}
+    service._cache_doc_lengths = None
+    service._cache_idf = {}
+    service._cache_count = 12
+    service._cache_checked_at = 100.0
+    monkeypatch.setattr(retrieval_module.time, "monotonic", lambda: 110.0)
+
+    class Db:
+        def query(self, *_args):
+            raise AssertionError("A warm retrieval index should not run COUNT(*) on every query")
+
+    assert service._get_cache(Db())[0] is service._cache_chunks
+
+
+def test_invalidating_retrieval_cache_forces_rebuild_validation(monkeypatch):
+    service = RetrievalService()
+    service._cache_chunks = []
+    service._cache_checked_at = 100.0
+    monkeypatch.setattr(settings, "RETRIEVAL_CACHE_WARMUP", False)
+
+    service.invalidate_cache()
+
+    assert service._cache_chunks is None
+    assert service._cache_checked_at == 0.0
+
+
+def test_rag_loads_summary_only_for_old_context_or_memory_recall():
+    assert not _needs_conversation_summary(MemoryIntent.TECHNICAL_RAG, [])
+    assert not _needs_conversation_summary(MemoryIntent.TECHNICAL_RAG, [{}] * (RECENT_CONTEXT_LIMIT - 1))
+    assert _needs_conversation_summary(MemoryIntent.TECHNICAL_RAG, [{}] * RECENT_CONTEXT_LIMIT)
+    assert _needs_conversation_summary(MemoryIntent.HISTORY_RECALL, [])
+    assert not _needs_conversation_summary(MemoryIntent.FIRST_MESSAGE_LOOKUP, [{}] * RECENT_CONTEXT_LIMIT)

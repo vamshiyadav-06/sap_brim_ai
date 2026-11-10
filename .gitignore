@@ -26,7 +26,10 @@ frontend/playwright-report/
 backend/sap_assistant.db
 
 # Knowledge base documents
-# Tracked in repository for complete knowledge base availability
+# The 61 PDFs already tracked stay tracked until the owner approves moving them to private storage
+# (SECURITY_DEPLOYMENT_CHECKLIST.md, "Knowledge-base documents"). New PDFs are NOT committed by accident;
+# use `git add -f` only for documents you are licensed to redistribute.
+knowledge_base/documents/*.pdf
 
 # Cloned GitHub repository snapshots (>500MB)
 backend/data/github_snapshots/
@@ -41,7 +44,18 @@ backups/
 # Database dumps and logs (may contain application data)
 *.dump
 *.sql.gz
+*.sql
+*.bak
+*.old
 *.log
+# Private keys and certificates must never be committed
+*.pem
+*.key
+*.p12
+# Local secret scanner output (can reference sensitive files even when values are redacted)
+gitleaks*.json
+semgrep*.json
+bandit*.json
 
 # Tool caches and coverage output
 .mypy_cache/

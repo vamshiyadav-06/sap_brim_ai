@@ -175,7 +175,8 @@ const AccountWorkspace: React.FC = () => {
   const normalizedQuery = query.trim().toLowerCase();
 
   const enrichedChats = useMemo(() => {
-    return chats.map(c => ({
+    // Chats started inside a project live under that project only, not in the general chat list.
+    return chats.filter(c => !c.project_id).map(c => ({
       ...c,
       isPinned: pinnedChatIds.includes(c.id),
     }));

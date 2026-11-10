@@ -31,6 +31,8 @@ from backend.app.services.llm_service import (
     SPRINT_CASUAL_SYSTEM_PROMPT, UNAVAILABLE_RESPONSE, generation_context, llm_service, with_generation_context,
 )
 from backend.app.services.query_router import QueryRoute, query_router
+from backend.app.services.intent_analyzer import intent_analyzer
+from backend.app.services import document_generator
 from backend.app.services.retrieval_service import retrieval_service
 from backend.app.services.reranking_service import reranking_service
 from backend.app.services.grounding_service import grounding_service
@@ -42,6 +44,7 @@ from backend.app.services.conversation_memory_service import MemoryIntent, conve
 from backend.app.services.public_payload import public_done_event
 from backend.app.services import audit_log, languages, token_meter, token_wallet, user_memory
 from backend.app.services.detached_stream import detached, stream_cancellations
+from backend.app.services.capacity import answer_capacity
 from backend.app.config import settings
 
 # "[Attached: a.pdf (2 pages)]\n\n" header that prefixes prompts sent with files.
@@ -465,14 +468,50 @@ def _sprint_allowed(query: str, chat_history, attachments) -> bool:
     return allowed
 
 
-def _sprint_route(query: str, chat_history, attachments, memory: Dict[str, Any]) -> str:
+def _sprint_analysis(query: str, chat_history, attachments, memory: Optional[Dict[str, Any]]):
+    """The LLM intent analysis (intent + spelling correction) of a Sprint question, or None when it does not
+    apply (attachments, memory answers and recall) or is unavailable; the rule-based routing then decides."""
+    memory = memory or {}
+    if attachments or memory.get("answer") or memory.get("intent") in _SPRINT_RECALL_INTENTS:
+        return None
+    return intent_analyzer.analyze(query, chat_history)
+
+
+def _sprint_formats(query: str, analysis, attachments, memory: Optional[Dict[str, Any]]) -> list:
+    """The files a Sprint question asks to be created (none for attachments, memory answers and recall)."""
+    memory = memory or {}
+    if attachments or memory.get("answer") or memory.get("intent") in _SPRINT_RECALL_INTENTS:
+        return []
+    return document_generator.requested_formats(analysis, query)
+
+
+def _sprint_document(content: str, formats: list, owner_id, request: str) -> str:
+    """The chat message for a document request (links to the created files); the content itself if that fails."""
+    try:
+        return document_generator.create_documents(owner_id, content, formats, request_title=request)[0]
+    except Exception as exc:
+        logger.warning("Document creation failed (%s)", type(exc).__name__)
+        return content
+
+
+def _sprint_route(query: str, chat_history, attachments, memory: Dict[str, Any], analysis=None) -> str:
     """
-    The Sprint path for this turn; the value is also the stored source_type. Memory answers and SAP
-    questions (including SAP follow-ups such as "ok, what about dunning?") win, so only a turn that
-    would otherwise be refused is checked for small talk, with the same router as Scholar's casual path.
+    The Sprint path for this turn; the value is also the stored source_type. Memory answers win. With an
+    LLM intent analysis the meaning decides: clarifying question, small talk, SAP answer or a general answer
+    (nothing is refused for lacking SAP keywords). Without one, SAP questions (including SAP follow-ups such
+    as "ok, what about dunning?") win, and only a turn that would otherwise be refused is checked for small
+    talk, with the same router as Scholar's casual path.
     """
     if memory.get("answer"):
         return "conversation_memory"
+    if analysis is not None and not attachments and memory.get("intent") not in _SPRINT_RECALL_INTENTS:
+        if is_company_question(query) or is_company_question(analysis.corrected_question):
+            return "company"  # about Clyptus itself: a fixed answer, not a model guess
+        if analysis.needs_clarification:
+            return "clarification"
+        if analysis.small_talk:
+            return "conversational"
+        return "sprint" if analysis.about_sap else "general"
     if memory.get("intent") in _SPRINT_RECALL_INTENTS or _sprint_allowed(query, chat_history, attachments):
         return "sprint"
     if not attachments and is_company_question(query):
@@ -482,9 +521,30 @@ def _sprint_route(query: str, chat_history, attachments, memory: Dict[str, Any])
     return "refusal"
 
 
-def _sprint_result(query: str, chat_history, attachments, memory: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def _sprint_result(query: str, chat_history, attachments, memory: Optional[Dict[str, Any]] = None, owner_id=None) -> Dict[str, Any]:
     memory = memory or {}
-    route = _sprint_route(query, chat_history, attachments, memory)
+    analysis = _sprint_analysis(query, chat_history, attachments, memory)
+    route = _sprint_route(query, chat_history, attachments, memory, analysis=analysis)
+    formats = _sprint_formats(query, analysis, attachments, memory) if route in ("sprint", "general") else []
+    if analysis is not None:
+        query = analysis.corrected_question  # the corrected question is what the model answers
+    ask = document_generator.query_with_instructions(query, formats) if formats else query
+    if route == "clarification":
+        return {
+            "answer": analysis.clarification_question, "source_type": "conversational",
+            "verification_status": "unverified", "grounding_score": None,
+        }
+    if route == "general":
+        answer = llm_service.generate_general_reply(
+            ask, chat_history=chat_history, regeneration_index=memory.get("regeneration_index")
+        )
+        if formats and answer != UNAVAILABLE_RESPONSE:
+            answer = _sprint_document(answer, formats, owner_id, query)
+        return {
+            "answer": answer, "source_type": "unavailable" if answer == UNAVAILABLE_RESPONSE else "direct_llm",
+            "verification_status": "unavailable" if answer == UNAVAILABLE_RESPONSE else "unverified",
+            "grounding_score": None,
+        }
     if route == "conversation_memory":
         return {
             "answer": memory["answer"], "source_type": "conversation_memory",
@@ -510,10 +570,12 @@ def _sprint_result(query: str, chat_history, attachments, memory: Optional[Dict[
         }
 
     answer = llm_service.generate_sprint_reply(
-        query, chat_history=chat_history, attachments=attachments,
+        ask, chat_history=chat_history, attachments=attachments,
         summary=memory.get("summary"), recalled_messages=memory.get("recalled"),
         regeneration_index=memory.get("regeneration_index"),
     )
+    if formats and answer != UNAVAILABLE_RESPONSE:
+        answer = _sprint_document(answer, formats, owner_id, query)
     return {
         "answer": answer,
         "source_type": "unavailable" if answer == UNAVAILABLE_RESPONSE else "sprint",
@@ -523,6 +585,7 @@ def _sprint_result(query: str, chat_history, attachments, memory: Optional[Dict[
 
 
 @router.post("")
+@answer_capacity
 def send_message(
     chat_id: str,
     msg_in: MessageCreate,
@@ -603,7 +666,7 @@ def send_message(
     _gen_start_time = time.perf_counter()
     with generation_context(regeneration_index, llm_info):
         if msg_in.mode == "sprint":
-            rag_result = _sprint_result(msg_in.content.strip(), chat_history, request_attachments, memory=sprint_memory)
+            rag_result = _sprint_result(msg_in.content.strip(), chat_history, request_attachments, memory=sprint_memory, owner_id=current_user.id)
             rag_result.update({"citations": [], "web_sources": [], "images": [], "follow_up_questions": []})
         else:
             rag_result = _invoke_rag_process(
@@ -720,6 +783,7 @@ def send_message(
 
 
 @router.post("/stream")
+@answer_capacity
 def send_message_stream(
     chat_id: str,
     msg_in: MessageCreate,
@@ -790,6 +854,7 @@ def send_message_stream(
 
 
 @router.post("/{message_id}/edit")
+@answer_capacity
 def edit_message_stream(
     chat_id: str,
     message_id: str,
@@ -1272,18 +1337,32 @@ def handle_sprint_streaming_response(
             # The SAP-topic check works on English; the model still gets the question as the user wrote it.
             scope_query = (languages.question_to_english(query, languages.question_language_of(current_user))
                            if not memory.get("answer") else query)
-            route = _sprint_route(scope_query, hist, attachments, memory)
+            # The LLM reads the intent first (on the question as the user wrote it, in any language).
+            analysis = _sprint_analysis(query, hist, attachments, memory)
+            route = _sprint_route(scope_query, hist, attachments, memory, analysis=analysis)
             if route == "refusal" and user_memory.matches_query(memory_text, query):
                 route = "sprint"  # a question about what the user saved is not off-topic
-            if route in ("sprint", "conversational"):
-                chunks = llm_service.stream_sprint_reply(
-                    query, chat_history=hist, attachments=attachments,
-                    summary=memory.get("summary"), recalled_messages=memory.get("recalled"),
-                    regeneration_index=regeneration,
-                ) if route == "sprint" else llm_service.stream_emotional_casual_reply(
-                    query, chat_history=hist, system_prompt=SPRINT_CASUAL_SYSTEM_PROMPT,
-                    regeneration_index=regeneration,
-                )
+            answer_query = analysis.corrected_question if analysis is not None else query
+            doc_formats = _sprint_formats(query, analysis, attachments, memory) if route in ("sprint", "general") else []
+            if doc_formats:  # the content goes into the file, not the chat
+                answer_query = document_generator.query_with_instructions(answer_query, doc_formats)
+                yield f"data: {json.dumps({'type': 'status', 'stage': 'generating', 'message': 'Creating your document...'})}\n\n"
+            if route in ("sprint", "conversational", "general"):
+                if route == "sprint":
+                    chunks = llm_service.stream_sprint_reply(
+                        answer_query, chat_history=hist, attachments=attachments,
+                        summary=memory.get("summary"), recalled_messages=memory.get("recalled"),
+                        regeneration_index=regeneration,
+                    )
+                elif route == "general":
+                    chunks = llm_service.stream_general_reply(
+                        answer_query, chat_history=hist, regeneration_index=regeneration,
+                    )
+                else:
+                    chunks = llm_service.stream_emotional_casual_reply(
+                        answer_query, chat_history=hist, system_prompt=SPRINT_CASUAL_SYSTEM_PROMPT,
+                        regeneration_index=regeneration,
+                    )
                 reported_tokens = 0
                 for chunk in token_meter.metered(
                         languages.scoped(
@@ -1293,21 +1372,31 @@ def handle_sprint_streaming_response(
                         reported_tokens = meter.used_tokens
                         yield _usage_event(reported_tokens)
                     accumulated_text += chunk
+                    if doc_formats:
+                        continue
                     visible = marker_stripper.feed(chunk) if marker_stripper is not None else chunk
                     if visible:
                         yield f"data: {json.dumps({'type': 'token', 'content': visible})}\n\n"
+                if doc_formats and strip_markers(accumulated_text).strip() not in ("", UNAVAILABLE_RESPONSE):
+                    accumulated_text = _sprint_document(accumulated_text, doc_formats, current_user.id, query)
+                    yield f"data: {json.dumps({'type': 'token', 'content': accumulated_text})}\n\n"
+                elif doc_formats:
+                    yield f"data: {json.dumps({'type': 'token', 'content': strip_markers(accumulated_text)})}\n\n"
                 answer = strip_markers(accumulated_text).strip()
-                source_type = "unavailable" if answer == UNAVAILABLE_RESPONSE else route
+                source_type = "unavailable" if answer == UNAVAILABLE_RESPONSE else (
+                    "direct_llm" if route == "general" else route)
                 verification_status = "unavailable" if source_type == "unavailable" else "unverified"
             else:
-                # A memory lookup answered from the database, or the SAP-scope refusal.
+                # A memory lookup answered from the database, a clarifying question, or the SAP-scope refusal.
                 if route == "conversation_memory":
                     answer = memory["answer"]
                 elif route == "company":
                     answer = COMPANY_ANSWER
+                elif route == "clarification":
+                    answer = analysis.clarification_question
                 else:
                     answer = NON_SAP_REFUSAL_RESPONSE
-                source_type = "conversational" if route == "company" else route
+                source_type = "conversational" if route in ("company", "clarification") else route
                 verification_status = "unverified"
                 accumulated_text = answer
                 visible = marker_stripper.feed(answer) if marker_stripper is not None else answer

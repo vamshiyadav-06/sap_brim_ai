@@ -6,6 +6,7 @@ from backend.app.config import settings
 from backend.app.services.data_redaction import redact_external_text
 from backend.app.services import token_meter
 from backend.app.services.llm_service import model_cooldowns
+from backend.app.services import provider_keys
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +22,8 @@ class QueryRewriter:
     """
 
     def __init__(self):
-        self.api_key = settings.GROQ_API_KEY
+        # The normal Groq key, or the first fallback key when only fallback keys were configured.
+        self.api_key = settings.GROQ_API_KEY or next(iter(provider_keys.fallback_keys("groq")), "")
         self.client = None
         allowed = {p.strip().lower() for p in settings.LLM_ALLOWED_PROVIDERS.split(",") if p.strip()}
         if self.api_key and "groq" in allowed:

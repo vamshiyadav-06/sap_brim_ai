@@ -1,11 +1,16 @@
 import logging
+import asyncio
+import uuid
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
+import anyio.to_thread
 import jwt
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import TimeoutError as ConnectionPoolTimeout
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from backend.app.config import settings, security_settings_errors
@@ -15,8 +20,10 @@ from backend.app.security.log_safety import PrivacyLogFilter
 from backend.app.security.body_size import BodyTooLarge, RequestBodySizeLimitMiddleware
 from backend.app.database import init_db, SessionLocal, DatabaseConnectionError, describe_target
 from backend.app.services.retrieval_service import retrieval_service
+from backend.app.services.capacity import BUSY_DETAIL, answer_bulkhead, sizing_warning
 from backend.app.api.auth import router as auth_router
 from backend.app.api.chats import router as chats_router
+from backend.app.api.generated_files import router as generated_files_router
 from backend.app.api.projects import router as projects_router
 from backend.app.api.memories import router as memories_router
 from backend.app.api.messages import router as messages_router
@@ -41,6 +48,14 @@ async def lifespan(app: FastAPI):
             logger.critical("INSECURE CONFIGURATION - backend not started. %s", problem)
         raise RuntimeError("Insecure configuration in .env: " + " ".join(insecure))
     warn_if_not_shared()
+    try:
+        # Synchronous endpoints share this pool; the framework default (40) is small for many users.
+        anyio.to_thread.current_default_thread_limiter().total_tokens = settings.THREADPOOL_SIZE
+    except Exception as exc:
+        logger.warning("[CAPACITY] Could not set the thread pool size (%s)", type(exc).__name__)
+    capacity_warning = sizing_warning()
+    if capacity_warning:
+        logger.warning("[CAPACITY] %s", capacity_warning)
     logger.info("[SERVER] Starting SAP BRIM AI backend (environment: %s, version: 1.0.0)...", settings.ENVIRONMENT)
     logger.info("[DATABASE] Connecting to PostgreSQL at %s...", describe_target(settings.DATABASE_URL))
     try:
@@ -54,6 +69,10 @@ async def lifespan(app: FastAPI):
     logger.info("[SERVER] SAP BRIM AI backend ready to accept requests.")
     yield
     logger.info("[SERVER] Shutting down SAP BRIM AI backend.")
+    # Let answers that are still generating finish and be saved before the process exits.
+    still_running = await asyncio.to_thread(answer_bulkhead.drain, settings.SHUTDOWN_DRAIN_SECONDS)
+    if still_running:
+        logger.warning("[SERVER] %d answer(s) were still running when the drain period ended.", still_running)
 
 _production = settings.ENVIRONMENT.lower() == "production"
 
@@ -105,7 +124,10 @@ async def request_security_controls(request: Request, call_next):
         except ValueError:
             return JSONResponse(status_code=400, content={"detail": "Invalid content length."})
     scope, limit = _rate_limit_scope(request)
-    if scope and not rate_limiter.allow(scope, _rate_limit_identity(request), limit, 60):
+    allowed = True
+    if scope:
+        allowed = await asyncio.to_thread(rate_limiter.allow, scope, _rate_limit_identity(request), limit, 60)
+    if not allowed:
         logger.warning("[SECURITY] Rate limit exceeded on scope='%s' for client=%s", scope, _rate_limit_identity(request))
         return JSONResponse(status_code=429, content={"detail": "Too many requests. Try again shortly."})
     return await call_next(request)
@@ -176,18 +198,34 @@ async def database_unavailable_handler(request: Request, exc: Exception):
     )
 
 
-# Global safe error handling: never leak stack traces to client
+# Every connection of the pool is in use and none became free in DATABASE_POOL_TIMEOUT seconds: the service is
+# busy, not broken. Say so (and when to retry) instead of a generic 500.
+@app.exception_handler(ConnectionPoolTimeout)
+async def connection_pool_exhausted_handler(request: Request, exc: Exception):
+    logger.error("[CAPACITY] No database connection became free within %ss on %s %s",
+                 settings.DATABASE_POOL_TIMEOUT, request.method, request.url.path)
+    return JSONResponse(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, content={"detail": BUSY_DETAIL},
+                        headers={"Retry-After": "5"})
+
+
+# Global safe error handling: never leak stack traces to client. The request id ties the user's report to
+# the log line; one failing request never affects another.
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    logger.error(f"[API ERROR] Unhandled exception on {request.method} {request.url.path}: {exc}", exc_info=True)
+    request_id = uuid.uuid4().hex[:12]
+    logger.error(f"[API ERROR] [{request_id}] Unhandled exception on {request.method} {request.url.path}: {exc}",
+                 exc_info=True)
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        content={"detail": "An internal server error occurred. Please contact the administrator."}
+        content={"detail": "An internal server error occurred. Please contact the administrator.",
+                 "request_id": request_id},
+        headers={"X-Request-ID": request_id},
     )
 
 # Include routers
 app.include_router(auth_router, prefix=settings.API_V1_STR)
 app.include_router(chats_router, prefix=settings.API_V1_STR)
+app.include_router(generated_files_router, prefix=settings.API_V1_STR)
 app.include_router(projects_router, prefix=settings.API_V1_STR)
 app.include_router(memories_router, prefix=settings.API_V1_STR)
 app.include_router(messages_router, prefix=settings.API_V1_STR)
@@ -201,6 +239,9 @@ app.include_router(admin_organisations_router, prefix=settings.API_V1_STR)
 
 @app.get("/", tags=["Info"])
 def root():
+    # Production publishes no service name, version or docs path (SEC-08); development keeps them.
+    if _production:
+        return {"status": "running"}
     return {
         "service": settings.PROJECT_NAME,
         "version": "1.0.0",
@@ -210,13 +251,43 @@ def root():
         "api": "/api"
     }
 
+# Health checks run on their own small executor with a hard timeout. On the shared thread pool they would
+# queue behind long answers, and an orchestrator would then restart a service that is merely busy.
+_health_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="health")
+
+
 @app.get("/health", tags=["Health"])
-def health_check():
+async def health_check():
+    loop = asyncio.get_running_loop()
+    try:
+        return await asyncio.wait_for(
+            loop.run_in_executor(_health_executor, _probe_dependencies),
+            timeout=settings.HEALTH_CHECK_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        logger.error("Health check timed out after %.1f s", settings.HEALTH_CHECK_TIMEOUT_SECONDS)
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"status": "unhealthy", "detail": "Health check timed out."},
+        )
+
+
+def _probe_dependencies():
     """Liveness and database reachability only. Counts, model and version are admin-only
     (GET /api/admin/system-health) so anonymous callers learn nothing about the corpus (F-42)."""
     db = SessionLocal()
     try:
         db.execute(text("SELECT 1"))
+        if settings.REDIS_URL and not rate_limiter.check():
+            logger.error("Health check: configured Redis rate-limit storage is unavailable")
+            return JSONResponse(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                content={
+                    "status": "unhealthy",
+                    "database": {"status": "connected"},
+                    "rate_limits": {"status": "unavailable"},
+                },
+            )
         return {"status": "healthy", "database": {"status": "connected"}}
     except OperationalError as exc:
         logger.error(f"Health check: PostgreSQL unreachable at {describe_target(settings.DATABASE_URL)}: {exc.orig}")

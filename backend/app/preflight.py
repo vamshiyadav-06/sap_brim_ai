@@ -36,8 +36,14 @@ class Report:
         self.lines.append(f"FAIL  {message}")
 
 
+def _fallback_keys(s: Settings, provider: str) -> List[str]:
+    """Configured fallback keys of a provider (values are never reported, only how many there are)."""
+    values = (getattr(s, f"{provider.upper()}_API_KEY_FALLBACK_{number}", "") for number in (1, 2, 3))
+    return [value.strip() for value in values if value and value.strip()]
+
+
 def _provider_key(s: Settings, provider: str) -> str:
-    return getattr(s, PROVIDER_KEYS[provider], "") or s.LLM_API_KEY
+    return getattr(s, PROVIDER_KEYS[provider], "") or s.LLM_API_KEY or next(iter(_fallback_keys(s, provider)), "")
 
 
 def check_settings(s: Settings, expect_staging: bool = False) -> Report:
@@ -62,7 +68,8 @@ def check_settings(s: Settings, expect_staging: bool = False) -> Report:
         report.fail(f"LLM_ALLOWED_PROVIDERS contains unknown providers: {', '.join(unknown)}")
     usable = [p for p in allowed if p in PROVIDER_KEYS and _provider_key(s, p)]
     if usable:
-        report.ok(f"LLM providers with a key: {', '.join(usable)}")
+        report.ok("LLM providers with a key: " + ", ".join(
+            f"{p} (+{len(_fallback_keys(s, p))} fallback)" if _fallback_keys(s, p) else p for p in usable))
     else:
         report.fail("no allowed LLM provider has an API key: every answer would be 'unavailable'")
     if s.LLM_REQUEST_DEADLINE_SECONDS < 30:

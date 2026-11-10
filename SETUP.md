@@ -224,7 +224,7 @@ Keep the virtual environment activated for every backend command below.
 
 ## 7. Database migrations
 
-The schema is managed by **Alembic** (`backend/migrations/versions`, revisions `0001_baseline` to `0006_organisations`).
+The schema is managed by **Alembic** (`backend/migrations/versions`, revisions `0001_baseline` to `0017_token_allowance_100`). Back up the database before upgrading an existing one; `0001_baseline` cannot be downgraded.
 
 - **Development (default):** with `AUTO_MIGRATE=True` the backend applies pending migrations when it starts. Nothing to do.
 - **Manual / production:** set `AUTO_MIGRATE=False` and run the migrations yourself before starting the backend:
@@ -234,7 +234,7 @@ python -m alembic -c backend/alembic.ini upgrade head
 python -m alembic -c backend/alembic.ini current
 ```
 
-`current` should print `0006_organisations (head)`. With `AUTO_MIGRATE=False`, the backend refuses to start against an out-of-date schema and prints the command to run. Alembic reads `DATABASE_URL` from `.env`; `backend/alembic.ini` contains no credentials.
+`current` should print `0017_token_allowance_100 (head)`. With `AUTO_MIGRATE=False`, the backend refuses to start against an out-of-date schema and prints the command to run. Alembic reads `DATABASE_URL` from `.env`; `backend/alembic.ini` contains no credentials.
 
 ## 8. Start the backend
 

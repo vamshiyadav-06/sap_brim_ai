@@ -30,9 +30,13 @@ class User(Base):
     is_active = Column(Boolean, nullable=False, default=True, server_default=text("true"))
     must_change_password = Column(Boolean, nullable=False, default=False, server_default=text("false"))
     last_login_at = Column(DateTime, nullable=True)
-    # Free token wallet in thousandths of a token (services/token_wallet.py); every account starts with 1,000.
+    failed_login_attempts = Column(Integer, nullable=False, default=0, server_default="0")
+    login_locked_at = Column(DateTime, nullable=True)
+    login_unlock_key_hash = Column(String(64), nullable=True)
+    login_unlock_key_expires_at = Column(DateTime, nullable=True)
+    # Free token wallet in thousandths of a token (services/token_wallet.py); every account starts with 100.
     token_balance_milli = Column(Integer, nullable=False, default=lambda: settings.TOKEN_ALLOWANCE * 1000,
-                                 server_default=text("1000000"))
+                                 server_default=text("100000"))
     # Language answers are written in (Settings); services/languages.py.
     preferred_language = Column(String(8), nullable=False, default="en", server_default=text("'en'"))
     # Language questions are written in (Settings); NULL = same as the answer language.

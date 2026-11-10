@@ -1,7 +1,9 @@
+import heapq
 import re
 import math
 import logging
 import threading
+import time
 import numpy as np
 from typing import List, Dict, Any, FrozenSet, Optional, Set, Tuple
 from collections import defaultdict
@@ -17,6 +19,9 @@ logger = logging.getLogger(__name__)
 
 # Uploads and re-indexing invalidate in bursts; one rebuild after they settle is enough.
 REWARM_DELAY_SECONDS = 5.0
+# Avoid an exact PostgreSQL COUNT(*) on every RAG request. API-driven corpus changes call
+# invalidate_cache immediately; this interval also catches out-of-process DB edits.
+CACHE_VALIDATION_INTERVAL_SECONDS = 30.0
 
 STOP_WORDS = {
     "what", "is", "the", "a", "an", "how", "to", "in", "of", "and", "for", "with",
@@ -35,6 +40,18 @@ TECH_ID_PATTERN = re.compile(
 
 
 class RetrievalService:
+    @staticmethod
+    def _top_score_indices(scores: np.ndarray, eligible: np.ndarray, limit: int) -> List[int]:
+        """Select and order the best eligible scores without sorting the full corpus."""
+        candidate_indices = np.flatnonzero(eligible)
+        if limit <= 0 or candidate_indices.size == 0:
+            return []
+        if candidate_indices.size > limit:
+            candidate_scores = scores[candidate_indices]
+            partition = np.argpartition(candidate_scores, candidate_scores.size - limit)[-limit:]
+            candidate_indices = candidate_indices[partition]
+        return sorted(candidate_indices.tolist(), key=lambda idx: (-float(scores[idx]), idx))
+
     @staticmethod
     def preprocess_query(query: str) -> str:
         """Normalizes whitespace and standardizes common punctuation."""
@@ -63,6 +80,7 @@ class RetrievalService:
         self._avg_doc_len: float = 100.0
         self._cache_idf: Optional[Dict[str, float]] = None
         self._cache_count: int = -1
+        self._cache_checked_at: float = 0.0
         self._query_result_cache: Dict[Tuple[Any, ...], List[Dict[str, Any]]] = {}
         self._cache_lock = threading.Lock()
         self._warm_timer: Optional[threading.Timer] = None
@@ -77,6 +95,7 @@ class RetrievalService:
             self._cache_doc_lengths = None
             self._cache_idf = None
             self._cache_count = -1
+            self._cache_checked_at = 0.0
             self._query_result_cache.clear()
         if settings.RETRIEVAL_CACHE_WARMUP:
             self.schedule_warm_up(delay=rewarm_delay)
@@ -103,8 +122,24 @@ class RetrievalService:
 
     def _get_cache(self, db: Session):
         with self._cache_lock:
+            now = time.monotonic()
+            if (
+                self._cache_chunks is not None
+                and now - self._cache_checked_at < CACHE_VALIDATION_INTERVAL_SECONDS
+            ):
+                return (
+                    self._cache_chunks,
+                    self._cache_matrix,
+                    self._cache_token_index,
+                    self._cache_tech_id_index,
+                    self._cache_doc_lengths,
+                    self._avg_doc_len,
+                    self._cache_idf
+                )
+
             current_count = db.query(DocumentChunk).count()
             if self._cache_chunks is not None and self._cache_count == current_count:
+                self._cache_checked_at = now
                 return (
                     self._cache_chunks,
                     self._cache_matrix,
@@ -193,6 +228,7 @@ class RetrievalService:
             self._avg_doc_len = avg_len
             self._cache_idf = idf_dict
             self._cache_count = current_count
+            self._cache_checked_at = time.monotonic()
 
             return (
                 self._cache_chunks,
@@ -282,8 +318,9 @@ class RetrievalService:
         dense_eligible = eligible & np.fromiter(
             (meta["embedding_compatible"] for meta in cached_meta), dtype=bool, count=len(cached_meta)
         )
-        ranked_sims = np.where(dense_eligible, normalized_sims, -1.0)
-        top_vec_indices = [i for i in np.argsort(-ranked_sims)[:CANDIDATES_PER_CHANNEL] if dense_eligible[i]]
+        top_vec_indices = self._top_score_indices(
+            normalized_sims, dense_eligible, CANDIDATES_PER_CHANNEL
+        )
 
         vec_rank_map: Dict[int, int] = {}
         for rank, idx in enumerate(top_vec_indices, start=1):
@@ -309,7 +346,11 @@ class RetrievalService:
                         score *= 1.4
                     bm25_scores[d_idx] += score
 
-        sorted_bm25 = sorted(bm25_scores.items(), key=lambda x: x[1], reverse=True)[:CANDIDATES_PER_CHANNEL]
+        sorted_bm25 = heapq.nsmallest(
+            CANDIDATES_PER_CHANNEL,
+            bm25_scores.items(),
+            key=lambda item: (-item[1], item[0]),
+        )
         lex_rank_map: Dict[int, int] = {}
         for rank, (idx, _) in enumerate(sorted_bm25, start=1):
             lex_rank_map[idx] = rank

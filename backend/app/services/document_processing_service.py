@@ -68,7 +68,7 @@ class DocumentProcessingService:
     def __init__(self):
         self._lock = threading.Lock()
         self._is_processing = False
-        self._listeners: Set[asyncio.Queue] = set()
+        self._listeners: Dict[asyncio.Queue, asyncio.AbstractEventLoop] = {}
 
         # Live Progress State
         self._progress_state: Dict[str, Any] = {
@@ -90,15 +90,32 @@ class DocumentProcessingService:
             "recent_logs": [],
         }
 
-    def subscribe(self) -> asyncio.Queue:
-        q: asyncio.Queue = asyncio.Queue()
+    def subscribe(self, loop: Optional[asyncio.AbstractEventLoop] = None) -> asyncio.Queue:
+        loop = loop or asyncio.get_running_loop()
+        # Progress is a latest-state snapshot, not a lossless event log. A bounded queue
+        # prevents slow/disconnected SSE clients from accumulating every intermediate update.
+        q: asyncio.Queue = asyncio.Queue(maxsize=1)
         with self._lock:
-            self._listeners.add(q)
+            self._listeners[q] = loop
         return q
 
     def unsubscribe(self, q: asyncio.Queue):
         with self._lock:
-            self._listeners.discard(q)
+            self._listeners.pop(q, None)
+
+    @staticmethod
+    def _deliver_latest(q: asyncio.Queue, payload: Dict[str, Any]) -> None:
+        """Runs on the subscriber's event loop and coalesces stale progress snapshots."""
+        if q.full():
+            try:
+                q.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+        try:
+            q.put_nowait(payload)
+        except asyncio.QueueFull:
+            # Another loop callback won the race; its snapshot is at least as recent.
+            pass
 
     def _broadcast(self, event_data: Dict[str, Any]):
         with self._lock:
@@ -106,13 +123,16 @@ class DocumentProcessingService:
             event_data["timestamp"] = datetime.now(timezone.utc).isoformat()
             self._progress_state.update(event_data)
             payload = dict(self._progress_state)
-            listeners = list(self._listeners)
+            listeners = list(self._listeners.items())
 
-        for q in listeners:
+        for q, loop in listeners:
             try:
-                q.put_nowait(payload)
-            except Exception:
-                pass
+                # asyncio.Queue is not thread-safe. The pipeline worker must schedule
+                # delivery onto the loop that owns each subscriber queue.
+                loop.call_soon_threadsafe(self._deliver_latest, q, payload)
+            except RuntimeError:
+                # The client loop has closed; remove that stale listener.
+                self.unsubscribe(q)
 
     def get_progress_status(self) -> Dict[str, Any]:
         with self._lock:
@@ -405,7 +425,9 @@ class DocumentProcessingService:
                 return {
                     "status": "already_running",
                     "message": "A document processing job is already in progress.",
-                    "progress": self.get_progress_status(),
+                    # We already hold _lock here. Re-entering get_progress_status() would
+                    # deadlock because _lock is intentionally a non-reentrant Lock.
+                    "progress": dict(self._progress_state),
                 }
             self._is_processing = True
 
@@ -416,7 +438,13 @@ class DocumentProcessingService:
             daemon=True,
             name="DocumentProcessingWorker"
         )
-        thread.start()
+        try:
+            thread.start()
+        except Exception:
+            with self._lock:
+                self._is_processing = False
+                self._progress_state["is_processing"] = False
+            raise
 
         return {
             "status": "started",

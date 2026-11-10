@@ -20,6 +20,10 @@ from sqlalchemy.orm import Session
 from backend.app.api.auth import (
     INDIVIDUAL_ACCOUNT_AT_ORGANISATION_LOGIN,
     _guard_login,
+    _record_login_failure,
+    _verify_and_consume_unlock_key,
+    ADMIN_UNLOCK_REQUIRED,
+    INVALID_LOGIN,
     deny_sign_in,
     issue_login_token,
     require_usable_account,
@@ -237,16 +241,20 @@ def complete_activation(body: ActivationCompleteIn, request: Request, response: 
 def organisation_login(login_data: UserLogin, request: Request, response: Response,
                        db: Session = Depends(get_db)):
     """Sign-in for organisation accounts, with the same rate limit, lockout and timing rules as /auth/login."""
-    _guard_login(request, login_data.email)
-    user = authenticate_user(db, login_data.email, login_data.password)
+    locked_user = _guard_login(request, login_data.email, db, login_data.unlock_key)
+    user = (
+        _verify_and_consume_unlock_key(db, locked_user, login_data.password, login_data.unlock_key or "")
+        if locked_user is not None
+        else authenticate_user(db, login_data.email, login_data.password)
+    )
     if not user:
-        rate_limiter.record_login_failure(login_data.email)
+        locked = _record_login_failure(db, login_data.email)
         logger.warning("security_event login_failed flow=organisation")
         audit_log.record("org_login", "failure", request=request,
                          target=privacy_fingerprint(login_data.email.lower()))
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password",
+            status_code=423 if locked else status.HTTP_401_UNAUTHORIZED,
+            detail=ADMIN_UNLOCK_REQUIRED if locked else INVALID_LOGIN,
             headers={"WWW-Authenticate": "Bearer"},
         )
     if user.account_type != ACCOUNT_ORGANISATION:

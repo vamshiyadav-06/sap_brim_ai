@@ -19,6 +19,7 @@ class UserRegister(BaseModel):
 class UserLogin(BaseModel):
     email: EmailStr
     password: str
+    unlock_key: Optional[str] = Field(None, min_length=8, max_length=128)
 
 def check_password_bytes(value: str) -> str:
     """bcrypt only reads the first 72 bytes; longer passwords are rejected instead of truncated."""

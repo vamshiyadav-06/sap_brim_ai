@@ -1,4 +1,4 @@
-"""Free token wallet: 1,000 tokens per account, each answer costs 0 to 1 token, 0 blocks new questions."""
+"""Free token wallet: 100 tokens per account, each answer costs 0 to 1 token, 0 blocks new questions."""
 
 from datetime import datetime, timedelta
 
@@ -23,13 +23,13 @@ def test_cost_runs_from_zero_to_one_token_by_how_hard_the_question_was():
     assert token_wallet.cost_milli(10 ** 7) == token_wallet.MILLI  # a very hard question costs exactly 1
 
 
-def test_new_accounts_start_with_1000_tokens_and_the_balance_is_exposed():
+def test_new_accounts_start_with_100_tokens_and_the_balance_is_exposed():
     fx = OrgFixtures()
     try:
         user = fx.user()
         me = client.get("/api/auth/me", headers=headers_for(user.id))
         assert me.status_code == 200
-        assert me.json()["token_balance"] == 1000.0
+        assert me.json()["token_balance"] == 100.0
     finally:
         fx.cleanup()
 
@@ -39,7 +39,7 @@ def test_charging_subtracts_fractions_and_never_goes_below_zero():
     try:
         user = fx.user()
         with SessionLocal() as db:
-            assert token_wallet.charge(db, user.id, 250) == 1_000_000 - 250
+            assert token_wallet.charge(db, user.id, 250) == 100_000 - 250
             db.query(User).filter(User.id == user.id).update({"token_balance_milli": 100})
             db.commit()
             assert token_wallet.charge(db, user.id, 1000) == 0
@@ -83,15 +83,15 @@ def test_the_wallet_refills_to_the_allowance_every_three_days():
             assert first_window is not None
             assert timedelta(days=2, hours=23) < first_window - datetime.utcnow() <= timedelta(days=3)
 
-            token_wallet.charge(db, user.id, 400_000)
+            token_wallet.charge(db, user.id, 40_000)
             db.refresh(row)
             token_wallet.refill_if_due(db, row)  # window still open: nothing changes
-            assert row.token_balance_milli == 600_000 and row.token_refill_at == first_window
+            assert row.token_balance_milli == 60_000 and row.token_refill_at == first_window
 
             row.token_refill_at = datetime.utcnow() - timedelta(minutes=1)  # three days pass
             db.commit()
             token_wallet.refill_if_due(db, row)
-            assert row.token_balance_milli == 1_000_000  # back to 1,000, not 1,600: unused tokens do not pile up
+            assert row.token_balance_milli == 100_000  # back to 100, not 160: unused tokens do not pile up
             assert row.token_refill_at > datetime.utcnow() + timedelta(days=2)
     finally:
         fx.cleanup()
@@ -114,6 +114,6 @@ def test_an_empty_wallet_is_blocked_until_the_refill_date_then_answers_again():
             db.query(User).filter(User.id == user.id).update({"token_refill_at": datetime.utcnow() - timedelta(minutes=1)})
             db.commit()
         me = client.get("/api/auth/me", headers=headers_for(user.id)).json()
-        assert me["token_balance"] == 1000.0 and me["token_refill_at"]
+        assert me["token_balance"] == 100.0 and me["token_refill_at"]
     finally:
         fx.cleanup()

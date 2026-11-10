@@ -12,8 +12,9 @@ from backend.app.models.chat import Chat
 from backend.app.models.message import Message
 from backend.app.api.projects import own_project
 from backend.app.schemas.chat import ChatCreate, ChatUpdate, ChatResponse, ChatListItem
-from backend.app.schemas.message import DocumentExtractResponse
+from backend.app.schemas.message import DocumentExtractResponse, UrlExtractRequest
 from backend.app.services.document_extractor import extract_document
+from backend.app.services.url_reader import UrlReadError, read_url
 from backend.app.services.image_vision_service import analyze_chat_image, is_chat_image
 from backend.app.security.auth import get_current_user
 
@@ -159,7 +160,8 @@ async def extract_chat_document(
     current_user: User = Depends(get_current_user),
 ):
     """
-    Extracts text and page metadata from uploaded PDF, Word (DOCX), image, or plain text documents.
+    Extracts text and page metadata from any readable upload: PDF, Word, PowerPoint, Excel, OpenDocument, HTML,
+    RTF, ZIP archives, images, and text/data/source-code files (unreadable formats are refused with a reason).
     Images are read by a vision model (with OCR cross-check/fallback) so screenshots of errors
     and questions can be answered. Enforces a 25MB limit and returns structured content.
     """
@@ -176,11 +178,6 @@ async def extract_chat_document(
         )
     await file.close()
 
-    allowed = {".pdf", ".docx", ".txt", ".md", ".png", ".jpg", ".jpeg", ".webp", ".bmp"}
-    import os
-    if os.path.splitext(file.filename.lower())[1] not in allowed:
-        raise HTTPException(status_code=415, detail="Unsupported document type.")
-
     try:
         extractor = analyze_chat_image if is_chat_image(file.filename) else extract_document
         extracted = await run_in_threadpool(extractor, file.filename, content)
@@ -194,4 +191,26 @@ async def extract_chat_document(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to extract document contents. Please try another supported file."
+        )
+
+
+@router.post("/extract-url", response_model=DocumentExtractResponse)
+async def extract_chat_url(
+    body: UrlExtractRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Reads a web page or online file the user linked (public http/https addresses only; see url_reader) and
+    returns its text like an uploaded document, so the question can be answered from it.
+    """
+    try:
+        extracted = await run_in_threadpool(read_url, body.url)
+        return DocumentExtractResponse(**extracted)
+    except UrlReadError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except Exception as e:
+        logger.error("Error reading a linked page (%s)", type(e).__name__, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to read that link. Please try another one.",
         )

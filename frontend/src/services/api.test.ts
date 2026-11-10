@@ -61,6 +61,21 @@ describe('streamSSE', () => {
     expect(requestBody).toEqual({ content: 'Explain SAP BRIM', mode: 'sprint' });
   });
 
+  it.each([
+    [503, /busy right now.*try again/i],
+    [429, /answers in progress.*try again/i],
+  ])('explains a %i from the capacity limit instead of a bare HTTP code', async (status, message) => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{"detail":"x"}', { status })));
+    const { calls, callbacks } = recorder();
+
+    await streamSSE('/x', {}, callbacks);
+
+    expect(calls.error).toHaveLength(1);
+    expect(calls.error[0].message).toMatch(message);
+    expect((calls.error[0] as ApiError).status).toBe(status);
+    expect(calls.done).toHaveLength(0);
+  });
+
   it('hands the server-issued stream id to the caller (needed to save a stopped answer)', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => streamResponse([
       sse({ type: 'stream', stream_id: 'signed-stream-id' }, { type: 'token', content: 'Hi' }),

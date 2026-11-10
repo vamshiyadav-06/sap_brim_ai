@@ -61,6 +61,25 @@ def test_technical_explanation_is_not_a_table_by_default():
     assert "A table is appropriate here" not in prompt
 
 
+def test_cross_component_posting_question_gets_detailed_ordered_explanation():
+    question = "How does Convergent Invoicing post billing and invoice documents to FI-CA?"
+    plan, prompt = prompt_for(question)
+
+    assert plan.answer_type == "technical_explanation"
+    assert plan.domain_archetype == "integration"
+    assert plan.detail_level == "detailed"
+    assert plan.needs_steps is True
+    assert "Be comprehensive and thorough on every part the evidence supports" in prompt
+    assert "Present any ordered sequence or process flow as a numbered list." in prompt
+
+
+def test_simple_component_definition_stays_concise():
+    plan = route("What is FI-CA?")
+
+    assert plan.answer_type == "direct_answer"
+    assert plan.detail_level == "concise"
+
+
 # 3. Explicit table request produces a table
 def test_explicit_table_request_enables_table():
     plan, prompt = prompt_for("Explain the billable item statuses in a table")

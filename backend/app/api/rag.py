@@ -16,6 +16,7 @@ from backend.app.services.evidence_markers import StreamingMarkerStripper, strip
 from backend.app.services.public_payload import public_done_event
 from backend.app.services.llm_service import RequestDeadline, current_deadline, deadline_scope
 from backend.app.config import settings
+from backend.app.services.capacity import answer_capacity
 
 
 router = APIRouter(prefix="/rag", tags=["RAG"])
@@ -35,6 +36,7 @@ def _public_result(result: dict, is_admin: bool) -> dict:
 
 
 @router.post("/query", response_model=RAGQueryResponse)
+@answer_capacity
 def query_rag(
     request: RAGQueryRequest,
     current_user: User = Depends(get_current_user),
@@ -173,6 +175,7 @@ def query_rag(
 
 
 @router.post("/query/stream")
+@answer_capacity
 def query_rag_stream(
     request: RAGQueryRequest,
     current_user: User = Depends(get_current_user),

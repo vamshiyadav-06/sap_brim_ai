@@ -19,7 +19,7 @@ import logging
 import re
 from enum import Enum
 from typing import Dict, Any, List, Optional, Tuple
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from backend.app.services.sap_classifier import (
     SAPClassifier,
@@ -43,6 +43,9 @@ class QueryRoute(str, Enum):
     CONVERSATION_MEMORY = "CONVERSATION_MEMORY"
     MIXED_QUERY = "MIXED_QUERY"
     OUT_OF_DOMAIN = "OUT_OF_DOMAIN"
+    # Set only by the LLM intent analyzer (see intent_analyzer.py), never by the rule-based router.
+    GENERAL = "GENERAL"  # a question that is not about SAP: answered directly by the LLM
+    CLARIFICATION = "CLARIFICATION"  # genuinely ambiguous: ask the user one question
 
 
 @dataclass
@@ -54,6 +57,8 @@ class QueryRoutingDecision:
     emotional_part: Optional[str] = None
     technical_part: Optional[str] = None
     technical_route: Optional[QueryRoute] = None
+    # Files the user asked for (docx, pdf, ...): the answer is written as a document and delivered as a download.
+    output_formats: List[str] = field(default_factory=list)
 
 
 class QueryRouter:

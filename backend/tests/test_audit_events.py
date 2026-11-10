@@ -117,7 +117,12 @@ def test_audit_events_endpoint_is_admin_only_and_filterable(people):
     body = resp.json()
     assert body["total"] >= 1 and len(body["events"]) <= 5
     assert all(e["action"] == "login" and e["outcome"] == "failure" for e in body["events"])
-    assert "password" not in resp.text.lower()
+    # No credential value or credential-bearing field may be exposed. Fixed reason codes such as
+    # "invalid_unlock_key_or_password" are labels, not secrets, so the bare word is allowed.
+    assert "wrong-password-yy" not in resp.text
+    for event in body["events"]:
+        assert not {"password", "password_hash", "unlock_key", "token"} & set(event)
+        assert not {"password", "password_hash", "unlock_key", "token"} & set(event.get("details") or {})
 
 
 def test_audit_write_failure_never_breaks_the_request():

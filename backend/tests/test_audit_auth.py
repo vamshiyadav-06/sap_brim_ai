@@ -1,6 +1,8 @@
 """AUDIT_REPORT Phase 2 regressions: authentication and access control. Offline (fake DB session)."""
 
 import uuid
+import hashlib
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -24,6 +26,9 @@ class FakeQuery:
     def filter(self, *args, **kwargs):
         return self
 
+    def with_for_update(self):
+        return self
+
     def first(self):
         return self._user
 
@@ -42,6 +47,9 @@ class FakeSession:
     def filter(self, *conditions):
         # User.email == "<value>": SQLAlchemy keeps the bound value on the right side.
         self.last_email = getattr(getattr(conditions[0], "right", None), "value", None)
+        return self
+
+    def with_for_update(self):
         return self
 
     def first(self):
@@ -63,7 +71,9 @@ class FakeSession:
 def make_user(email, is_admin=False):
     return SimpleNamespace(id=str(uuid.uuid4()), email=email, name="Test User", password_hash=PASSWORD_HASH,
                            is_admin=is_admin, role="admin" if is_admin else "consultant", token_version=0,
-                           created_at=__import__("datetime").datetime(2026, 1, 1))
+                           created_at=__import__("datetime").datetime(2026, 1, 1), failed_login_attempts=0,
+                           login_locked_at=None, login_unlock_key_hash=None, login_unlock_key_expires_at=None,
+                           account_type="individual", is_active=True, must_change_password=False)
 
 
 @pytest.fixture
@@ -101,18 +111,19 @@ def test_f06_spoofed_forwarded_for_is_ignored_from_untrusted_peer(client):
 
 
 def test_f06_account_locks_after_repeated_failures_even_with_correct_password(client):
-    for _ in range(settings.LOGIN_MAX_FAILURES):
+    for _ in range(settings.LOGIN_MAX_FAILURES - 1):
         assert login(client, "alice@example.com", "wrong-password-123").status_code == 401
-    assert login(client, "alice@example.com", PASSWORD).status_code == 429
+    assert login(client, "alice@example.com", "wrong-password-123").status_code == 423
+    assert login(client, "alice@example.com", PASSWORD).status_code == 423
     assert login(client, "bob@example.com", PASSWORD).status_code == 200, "other accounts are unaffected"
 
 
 def test_f06_admin_login_failures_count_toward_lockout(client):
     for _ in range(settings.LOGIN_MAX_FAILURES):
         resp = client.post("/api/auth/admin-login", json={"email": "admin@example.com", "password": "wrong-password-1"})
-        assert resp.status_code == 401
+        assert resp.status_code == (401 if _ < settings.LOGIN_MAX_FAILURES - 1 else 423)
     resp = client.post("/api/auth/admin-login", json={"email": "admin@example.com", "password": PASSWORD})
-    assert resp.status_code == 429
+    assert resp.status_code == 423
 
 
 def test_f06_successful_login_clears_failure_count(client):
@@ -125,9 +136,25 @@ def test_f06_successful_login_clears_failure_count(client):
 
 
 def test_f06_unknown_accounts_lock_too_so_lockout_does_not_reveal_existence(client):
+    statuses = [login(client, "nobody@example.com", "wrong-password-123").status_code
+                for _ in range(settings.LOGIN_MAX_FAILURES + 1)]
+    assert statuses == [401] * (settings.LOGIN_MAX_FAILURES - 1) + [423, 423]
+
+
+def test_f06_locked_account_requires_correct_one_time_admin_key_and_password(client):
+    session = app.dependency_overrides[get_db]()
+    user = session.users["alice@example.com"]
     for _ in range(settings.LOGIN_MAX_FAILURES):
-        assert login(client, "nobody@example.com", "wrong-password-123").status_code == 401
-    assert login(client, "nobody@example.com", "wrong-password-123").status_code == 429
+        login(client, "alice@example.com", "wrong-password-123")
+    key = "one-time-key-which-is-long-enough"
+    user.login_unlock_key_hash = hashlib.sha256(key.encode()).hexdigest()
+    user.login_unlock_key_expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
+    assert client.post("/api/auth/login", json={"email": user.email, "password": PASSWORD,
+                                               "unlock_key": "wrong-key"}).status_code == 401
+    response = client.post("/api/auth/login", json={"email": user.email, "password": PASSWORD,
+                                                    "unlock_key": key})
+    assert response.status_code == 200
+    assert user.login_locked_at is None and user.login_unlock_key_hash is None
 
 
 def test_f06_memory_backend_caps_keys_and_expires_buckets():

@@ -11,6 +11,7 @@ from backend.app.services.embedding_service import embedding_service
 from backend.app.services.evidence_markers import assign_evidence_ids
 from backend.app.services.grounding_service import GroundingService
 from backend.app.services.rag_service import RAGService
+from backend.app.services.reranking_service import reranking_service
 from backend.app.services.retrieval_service import RetrievalService
 
 
@@ -80,6 +81,24 @@ def test_cache_holds_lowercased_text_once_per_chunk():
     assert meta[0]["chunk_text"] == "Convergent Invoicing posts to FI-CA."
 
 
+def test_dense_candidate_selection_matches_full_sort_for_eligible_scores():
+    scores = np.array([0.12, 0.93, 0.71, 0.99, 0.85, 0.42], dtype=np.float32)
+    eligible = np.array([True, False, True, True, True, True])
+
+    selected = RetrievalService._top_score_indices(scores, eligible, 3)
+
+    assert selected == [3, 4, 2]
+
+
+def test_dense_candidate_selection_orders_ties_by_corpus_index():
+    scores = np.array([0.8, 0.8, 0.2, 0.8], dtype=np.float32)
+    eligible = np.ones(4, dtype=bool)
+
+    selected = RetrievalService._top_score_indices(scores, eligible, 3)
+
+    assert selected == [0, 1, 3]
+
+
 def test_overlap_scores_drive_best_passage_and_supporting_sources_consistently():
     passages = assign_evidence_ids([
         {"source_type": "knowledge_base", "source_id": "kb-1",
@@ -117,3 +136,71 @@ def test_aspect_merge_keeps_each_passage_once(monkeypatch):
     assert len(ids) == len(set(ids))
     assert {"som", "ci"} <= set(ids)
     assert len(aspect_results) == 2
+
+
+def test_cross_component_handoff_uses_wider_candidate_and_rerank_windows(monkeypatch):
+    service = RAGService()
+    calls = {}
+    candidates = [{"chunk_id": f"c{i}", "chunk_text": f"evidence {i}", "score": 0.9 - i / 100}
+                  for i in range(50)]
+
+    def retrieve(_db, _query, top_k, allowed_groups=None):
+        calls["retrieval_top_k"] = top_k
+        return candidates[:top_k]
+
+    def rerank(_query, rows, top_n):
+        calls["rerank_top_n"] = top_n
+        return rows[:top_n], 0.9, True
+
+    monkeypatch.setattr(service.retrieval, "retrieve", retrieve)
+    monkeypatch.setattr(reranking_service, "rerank_kb", rerank)
+    monkeypatch.setattr(settings, "TOP_K", 10)
+    monkeypatch.setattr(settings, "RERANK_TOP_K", 4)
+
+    rows, _, _ = service._retrieve_aspect_evidence(
+        None, "How does Convergent Invoicing post billing and invoice documents to FI-CA?", 10
+    )
+
+    assert calls == {"retrieval_top_k": 50, "rerank_top_n": 8}
+    assert len(rows) == 8
+
+
+def test_single_component_question_keeps_configured_retrieval_windows(monkeypatch):
+    service = RAGService()
+    calls = {}
+
+    def retrieve(_db, _query, top_k, allowed_groups=None):
+        calls["retrieval_top_k"] = top_k
+        return [{"chunk_id": "one", "chunk_text": "FI-CA", "score": 0.8}]
+
+    def rerank(_query, rows, top_n):
+        calls["rerank_top_n"] = top_n
+        return rows, 0.8, True
+
+    monkeypatch.setattr(service.retrieval, "retrieve", retrieve)
+    monkeypatch.setattr(reranking_service, "rerank_kb", rerank)
+    monkeypatch.setattr(settings, "TOP_K", 10)
+    monkeypatch.setattr(settings, "RERANK_TOP_K", 4)
+
+    service._retrieve_aspect_evidence(None, "What does FI-CA do?", 10)
+
+    assert calls == {"retrieval_top_k": 10, "rerank_top_n": 4}
+
+
+def test_evidence_selection_keeps_wide_handoff_rerank_set():
+    from backend.app.services.evidence_selection_service import EvidenceSelectionService
+
+    rows = [
+        {"chunk_id": f"c{i}", "chunk_text": f"Convergent Invoicing FI-CA passage {i}", "score": 0.9}
+        for i in range(8)
+    ]
+    selector = EvidenceSelectionService()
+    result = selector.select_strongest_evidence(
+        query="How does Convergent Invoicing post documents to FI-CA?",
+        internal_candidates=rows,
+        external_candidates=[],
+        internal_confidence_data={"confidence": 0.9, "should_trigger_tavily": False},
+        max_internal_passages=8,
+    )
+
+    assert len(result["selected_passages"]) == 8
