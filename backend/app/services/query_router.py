@@ -83,6 +83,7 @@ class QueryRouter:
         r"^(hi+|hey+|hello+|howdy|hola|namaste|greetings)\b",
         r"^(good\s+(morning|afternoon|evening|night|day))\b",
         r"\b(how\s+are\s+you|how\s+r\s+u|how're\s+you|how\s+is\s+it\s+going|how\s+do\s+you\s+feel)\b",
+        r"\b(how\s+(was|is)\s+your\s+(day|week|weekend|morning|evening)|how('s|\s+has)\s+your\s+(day|week)\s+(been|going)|how\s+have\s+you\s+been|what'?s\s+up|wassup)\b",
         r"\b(what\s+are\s+you\s+doing|what're\s+you\s+doing|what\s+are\s+u\s+doing|what\s+r\s+u\s+doing)\b",
         r"\b(who\s+are\s+you|what\s+is\s+your\s+name|what's\s+your\s+name|introduce\s+yourself)\b",
         r"\b(what\s+can\s+you\s+do|what\s+do\s+you\s+do|tell\s+me\s+about\s+yourself|how\s+can\s+you\s+help\s+me)\b",

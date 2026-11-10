@@ -235,7 +235,7 @@ def _model(monkeypatch, **fields):
     monkeypatch.setattr(llm_service, "analyze_question_intent", fake)
 
 
-def test_scholar_general_document_request_returns_a_link_not_the_text(monkeypatch):
+def test_scholar_general_document_request_returns_a_link_not_the_text(monkeypatch, open_scope):
     _model(monkeypatch, category="general", about_sap=False, output_formats=["pdf"],
            corrected_question="Create a PDF about volcanoes.")
     seen = {}
@@ -253,7 +253,7 @@ def test_scholar_general_document_request_returns_a_link_not_the_text(monkeypatc
     assert dg.load_file("u1", file_id) is not None
 
 
-def test_scholar_streaming_hides_the_content_and_sends_only_the_message(monkeypatch):
+def test_scholar_streaming_hides_the_content_and_sends_only_the_message(monkeypatch, open_scope):
     _model(monkeypatch, category="general", about_sap=False, output_formats=["docx"])
     monkeypatch.setattr(llm_service, "stream_general_reply",
                         lambda q, chat_history=None, regeneration_index=None: iter(["# Plan\n\n", "## Step\n\n", "Do it."]))
@@ -301,7 +301,7 @@ def test_without_a_model_the_rule_based_detection_still_creates_documents(monkey
     assert "/generated-files/" in result["answer"] and "Dunning notifies" not in result["answer"]
 
 
-def test_a_normal_question_is_unaffected(monkeypatch):
+def test_a_normal_question_is_unaffected(monkeypatch, open_scope):
     _model(monkeypatch, category="general", about_sap=False)
     monkeypatch.setattr(llm_service, "generate_general_reply", lambda q, chat_history=None, regeneration_index=None: "Paris." if "DOCUMENT" not in q else "BAD")
     result = rag_service.process_query(None, "capital of france", chat_history=[], user=SimpleNamespace(id="u1"))
@@ -330,7 +330,7 @@ def test_sprint_document_request_creates_the_file(monkeypatch):
     assert "[CC_deck.pptx](/generated-files/" in result["answer"] and "rates events" not in result["answer"]
 
 
-def test_sprint_stream_sends_only_the_message(monkeypatch):
+def test_sprint_stream_sends_only_the_message(monkeypatch, open_scope):
     _model(monkeypatch, category="general", about_sap=False, output_formats=["pdf"])
     monkeypatch.setattr(llm_service, "stream_general_reply",
                         lambda q, chat_history=None, regeneration_index=None: iter(["# Trip\n\n", "Secret body."]))
@@ -349,7 +349,7 @@ def test_sprint_stream_sends_only_the_message(monkeypatch):
     assert done["answer"] == tokens and done["source_type"] == "direct_llm"
 
 
-def test_sprint_failure_to_generate_content_creates_no_file(monkeypatch):
+def test_sprint_failure_to_generate_content_creates_no_file(monkeypatch, open_scope):
     _model(monkeypatch, category="general", about_sap=False, output_formats=["pdf"])
     monkeypatch.setattr(llm_service, "generate_general_reply", lambda q, chat_history=None, regeneration_index=None: UNAVAILABLE_RESPONSE)
     result = messages_api._sprint_result("make a pdf about x", [], [], owner_id="u1")

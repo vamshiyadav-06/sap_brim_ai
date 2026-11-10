@@ -115,7 +115,7 @@ def _route(query, history=None, attachments=False):
     return rag_service._route_with_intent(query, history or [], attachments)
 
 
-def test_scholar_general_question_goes_to_the_llm_not_a_refusal(monkeypatch):
+def test_scholar_general_question_goes_to_the_llm_not_a_refusal(monkeypatch, open_scope):
     _fake_model(monkeypatch, category="general", about_sap=False, corrected_question="What is the weather today?")
     query, analysis, decision = _route("wat is teh weather today")
     assert decision.route == QueryRoute.GENERAL and query == "What is the weather today?"
@@ -159,7 +159,7 @@ def _process(query, history=None):
     return rag_service.process_query(None, query, chat_history=history or [], user=None, attachments=None)
 
 
-def test_scholar_process_query_answers_a_general_question_directly(monkeypatch):
+def test_scholar_process_query_answers_a_general_question_directly(monkeypatch, open_scope):
     _fake_model(monkeypatch, category="general", about_sap=False, corrected_question="Who wrote Hamlet?")
     asked = {}
 
@@ -182,7 +182,7 @@ def test_scholar_process_query_returns_the_clarifying_question(monkeypatch):
     assert result["answer"] == "Which contract type do you mean?" and result["source_type"] == "conversational"
 
 
-def test_scholar_stream_query_streams_a_general_answer(monkeypatch):
+def test_scholar_stream_query_streams_a_general_answer(monkeypatch, open_scope):
     _fake_model(monkeypatch, category="general", about_sap=False)
     monkeypatch.setattr(llm_service, "stream_general_reply",
                         lambda q, chat_history=None, regeneration_index=None: iter(["Par", "is."]))
@@ -226,7 +226,7 @@ def test_rewriter_is_not_called_again_when_the_analysis_already_resolved_the_fol
 
 # ---- Sprint -----------------------------------------------------------------------------------------
 
-def test_sprint_general_question_is_answered_not_refused(monkeypatch):
+def test_sprint_general_question_is_answered_not_refused(monkeypatch, open_scope):
     _fake_model(monkeypatch, category="general", about_sap=False, corrected_question="What is the weather today?")
     asked = {}
 
@@ -268,7 +268,7 @@ def test_sprint_without_a_model_still_refuses_off_topic_requests():
     assert messages_api._sprint_result("Give me a pizza recipe", [], [])["answer"] == NON_SAP_REFUSAL_RESPONSE
 
 
-def test_sprint_stream_answers_a_general_question(monkeypatch):
+def test_sprint_stream_answers_a_general_question(monkeypatch, open_scope):
     _fake_model(monkeypatch, category="general", about_sap=False)
     monkeypatch.setattr(messages_api.llm_service, "stream_general_reply",
                         lambda q, chat_history=None, regeneration_index=None: iter(["Hello ", "there."]))
@@ -287,3 +287,93 @@ def test_sprint_stream_answers_a_general_question(monkeypatch):
 def test_general_reply_reports_unavailable_when_no_provider_answers(monkeypatch):
     monkeypatch.setattr(llm_service, "generate_completion", lambda *a, **k: "")
     assert llm_service.generate_general_reply("anything") == UNAVAILABLE_RESPONSE
+
+
+# ---- SAP-only scope (default): a topic that is not SAP is declined, greetings and SAP questions are not ---------
+
+def test_the_scope_is_sap_only_by_default():
+    assert settings.SAP_ONLY_SCOPE is True
+
+
+def test_scholar_declines_a_question_that_is_not_about_sap(monkeypatch):
+    _fake_model(monkeypatch, category="general", about_sap=False, corrected_question="Who wrote Hamlet?")
+    monkeypatch.setattr(llm_service, "generate_general_reply", _forbid)
+    monkeypatch.setattr(rag_service, "_retrieve_aspect_evidence", _forbid)
+    _, _, decision = _route("who rote hamlet")
+    assert decision.route == QueryRoute.OUT_OF_DOMAIN
+    result = _process("who rote hamlet")
+    assert result["answer"] == NON_SAP_REFUSAL_RESPONSE and result["source_type"] == "refusal"
+    assert result["citations"] == [] and result["is_in_rag_pipeline"] is False
+
+
+def test_scholar_stream_declines_a_question_that_is_not_about_sap(monkeypatch):
+    _fake_model(monkeypatch, category="general", about_sap=False)
+    monkeypatch.setattr(llm_service, "stream_general_reply", _forbid)
+    events = list(rag_service.stream_query(None, "capital of france", chat_history=[], user=None, attachments=None))
+    done = events[-1]
+    assert done["type"] == "done" and done["answer"] == NON_SAP_REFUSAL_RESPONSE and done["source_type"] == "refusal"
+
+
+def test_scholar_still_answers_greetings_and_sap_questions(monkeypatch):
+    _fake_model(monkeypatch, category="general", small_talk=True, about_sap=False)
+    assert _route("hello")[2].route == QueryRoute.EMOTIONAL_CASUAL
+    _fake_model(monkeypatch, category="sap_brim", about_sap=True, corrected_question="What is SAP BRIM?")
+    assert _route("what is sap brim")[2].route != QueryRoute.OUT_OF_DOMAIN
+
+
+def test_scholar_declines_a_document_request_about_something_else(monkeypatch):
+    _fake_model(monkeypatch, category="general", about_sap=False, output_formats=["pdf"],
+                corrected_question="Make me a PDF about cooking pasta")
+    monkeypatch.setattr(llm_service, "generate_general_reply", _forbid)
+    result = _process("make me a pdf about cooking pasta")
+    assert result["answer"] == NON_SAP_REFUSAL_RESPONSE and "/generated-files/" not in result["answer"]
+
+
+def test_sprint_declines_a_question_that_is_not_about_sap(monkeypatch):
+    _fake_model(monkeypatch, category="general", about_sap=False, corrected_question="What is the weather today?")
+    monkeypatch.setattr(llm_service, "generate_general_reply", _forbid)
+    monkeypatch.setattr(llm_service, "generate_sprint_reply", _forbid)
+    result = messages_api._sprint_result("wat is teh weather today", [], [])
+    assert result["answer"] == NON_SAP_REFUSAL_RESPONSE and result["source_type"] == "refusal"
+
+
+def test_sprint_stream_declines_a_question_that_is_not_about_sap(monkeypatch):
+    _fake_model(monkeypatch, category="general", about_sap=False)
+    monkeypatch.setattr(messages_api.llm_service, "stream_general_reply", _forbid)
+    monkeypatch.setattr(conversation_memory_service, "update_rolling_summary", lambda *_a, **_k: None)
+    session = FakeSession()
+    monkeypatch.setattr(messages_api, "SessionLocal", lambda: session)
+    monkeypatch.setattr(messages_api, "issue_stream_token", lambda *_args: "signed-stream")
+    response = messages_api.handle_sprint_streaming_response(
+        "chat-id", "tell me about volcanoes", chat_history=[],
+        current_user=SimpleNamespace(id="user-id", is_admin=True), attachments=[], user_message_id="m1",
+    )
+    done = next(e for e in _sse_events(response) if e["type"] == "done")
+    assert done["answer"] == NON_SAP_REFUSAL_RESPONSE and done["source_type"] == "refusal"
+
+
+# ---- Sentimental conversation is answered, other subjects are not -----------------------------------------------
+
+def test_how_was_your_day_is_small_talk_not_a_refusal_without_a_model():
+    from backend.app.services.query_router import query_router
+    for text in ("how was your day", "How's your day been?", "what's up", "how are you"):
+        assert query_router.route(text, chat_history=[]).route == QueryRoute.EMOTIONAL_CASUAL, text
+    assert query_router.route("who won the world cup", chat_history=[]).route == QueryRoute.OUT_OF_DOMAIN
+
+
+def test_analyzer_is_told_that_social_and_sentimental_messages_are_small_talk():
+    from backend.app.services.intent_analyzer import _SYSTEM
+    assert "how was your day" in _SYSTEM and "venting" in _SYSTEM
+    assert "unrelated subject" in _SYSTEM  # a mixed message gets the feeling answered only
+
+
+def test_casual_replies_never_work_on_another_subject():
+    from backend.app.services.llm_service import EMOTIONAL_CASUAL_SYSTEM_PROMPT, SPRINT_CASUAL_SYSTEM_PROMPT
+    for prompt in (EMOTIONAL_CASUAL_SYSTEM_PROMPT, SPRINT_CASUAL_SYSTEM_PROMPT):
+        assert "only help with SAP and SAP BRIM" in prompt and "how was your day" in prompt
+
+
+def test_small_talk_from_the_analysis_is_answered_in_both_modes_even_when_not_about_sap(monkeypatch):
+    _fake_model(monkeypatch, category="general", small_talk=True, about_sap=False, corrected_question="How was your day?")
+    assert _route("how was your day")[2].route == QueryRoute.EMOTIONAL_CASUAL
+    assert messages_api._sprint_result("how was your day", [], [])["source_type"] == "conversational"

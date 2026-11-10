@@ -119,3 +119,10 @@ def _intent_analyzer_offline(monkeypatch):
     from backend.app.services.llm_service import llm_service
     monkeypatch.setattr(llm_service, "analyze_question_intent", lambda prompt: None)
     yield
+
+
+@pytest.fixture
+def open_scope(monkeypatch):
+    """Lets a test exercise the open-scope (SAP_ONLY_SCOPE off) paths that answer non-SAP questions."""
+    from backend.app.config import settings
+    monkeypatch.setattr(settings, "SAP_ONLY_SCOPE", False)

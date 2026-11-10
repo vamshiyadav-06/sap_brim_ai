@@ -203,6 +203,9 @@ class Settings(BaseSettings):
     INTENT_ANALYZER_ENABLED: bool = os.getenv("INTENT_ANALYZER_ENABLED", "True").lower() in ("true", "1")
     INTENT_ANALYZER_MODEL: str = os.getenv("INTENT_ANALYZER_MODEL", "") or os.getenv("ANSWER_STYLE_CLASSIFIER_MODEL", "openai/gpt-oss-20b")
     INTENT_ANALYZER_TIMEOUT: float = float(os.getenv("INTENT_ANALYZER_TIMEOUT", "6.0"))
+    # SAP-only scope: a question the intent analysis judges to be unrelated to SAP is declined with a short
+    # message (greetings and thanks are still answered). False lets the assistant answer any topic.
+    SAP_ONLY_SCOPE: bool = os.getenv("SAP_ONLY_SCOPE", "True").lower() in ("true", "1")
     ANSWER_STYLE_DEFAULT: str = os.getenv("ANSWER_STYLE_DEFAULT", "technical_explanation")
     ANSWER_STYLE_DEFAULT_DETAIL: str = os.getenv("ANSWER_STYLE_DEFAULT_DETAIL", "balanced")
     ANSWER_STYLE_MAX_SECTIONS: int = int(os.getenv("ANSWER_STYLE_MAX_SECTIONS", "4"))

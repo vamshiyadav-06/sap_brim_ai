@@ -164,6 +164,17 @@ def test_memory_answer_uses_no_llm_tokens(monkeypatch):
     assert usage["used"] == 0 and usage["saved"] == usage["baseline"] > 0
 
 
+def test_a_declined_question_costs_no_tokens_and_shows_no_savings(monkeypatch):
+    charged = []
+    monkeypatch.setattr(messages_api, "_charge_tokens", lambda *a, **k: charged.append(a) or 1.0)
+    monkeypatch.setattr(messages_api, "_sprint_route", lambda *a, **k: "refusal")
+    events = _sprint_events(monkeypatch, user=SimpleNamespace(id="user-id", is_admin=False), conversation_chars=40000)
+    done = events[-1]
+    assert done["type"] == "done" and done["answer"].startswith("I can only assist with SAP")
+    assert "token_usage" not in done and "token_balance" not in done  # no popup, no wallet change
+    assert not charged
+
+
 def test_regular_user_receives_the_counts_only(monkeypatch):
     events = _sprint_events(monkeypatch, user=SimpleNamespace(id="user-id", is_admin=False), conversation_chars=40000)
     assert set(events[-1]["token_usage"]) == {"used", "baseline", "saved", "cost"}

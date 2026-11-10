@@ -511,7 +511,9 @@ def _sprint_route(query: str, chat_history, attachments, memory: Dict[str, Any],
             return "clarification"
         if analysis.small_talk:
             return "conversational"
-        return "sprint" if analysis.about_sap else "general"
+        if analysis.about_sap:
+            return "sprint"
+        return "refusal" if settings.SAP_ONLY_SCOPE else "general"  # not about SAP: declined unless the scope is open
     if memory.get("intent") in _SPRINT_RECALL_INTENTS or _sprint_allowed(query, chat_history, attachments):
         return "sprint"
     if not attachments and is_company_question(query):
@@ -1198,7 +1200,8 @@ def handle_streaming_response(
                         .first()
                     )
                     used_provider, used_model = _answering_llm(event, llm_info)
-                    token_usage = meter.summary(
+                    # A declined (out-of-scope) question costs nothing and shows no savings figures.
+                    token_usage = None if source_type == "refusal" else meter.summary(
                         question=query, answer=full_answer,
                         conversation_chars=_history_chars(hist) if conversation_chars is None else conversation_chars,
                     )
@@ -1211,8 +1214,8 @@ def handle_streaming_response(
                         assistant_msg.llm_provider = used_provider
                         assistant_msg.llm_model = used_model
                         assistant_msg.regeneration_count = regeneration
-                        assistant_msg.tokens_used = token_usage["used"]
-                        assistant_msg.tokens_baseline = token_usage["baseline"]
+                        assistant_msg.tokens_used = token_usage["used"] if token_usage else None
+                        assistant_msg.tokens_baseline = token_usage["baseline"] if token_usage else None
                         assistant_msg.embedding = conversation_memory_service.embed_message_content(full_answer)
                         save_db.commit()
                     else:
@@ -1225,8 +1228,8 @@ def handle_streaming_response(
                             llm_provider=used_provider,
                             llm_model=used_model,
                             regeneration_count=regeneration,
-                            tokens_used=token_usage["used"],
-                            tokens_baseline=token_usage["baseline"],
+                            tokens_used=token_usage["used"] if token_usage else None,
+                            tokens_baseline=token_usage["baseline"] if token_usage else None,
                             embedding=conversation_memory_service.embed_message_content(full_answer)
                         )
                         save_db.add(assistant_msg)
@@ -1253,10 +1256,11 @@ def handle_streaming_response(
                     )
 
                     event["message_id"] = assistant_msg.id
-                    event["token_usage"] = token_usage
-                    balance = _charge_tokens(save_db, current_user, token_usage)
-                    if balance is not None:
-                        event["token_balance"] = balance
+                    if token_usage is not None:
+                        event["token_usage"] = token_usage
+                        balance = _charge_tokens(save_db, current_user, token_usage)
+                        if balance is not None:
+                            event["token_balance"] = balance
                     event["llm_provider"] = used_provider
                     event["llm_model"] = used_model
                     event["regeneration_count"] = regeneration
@@ -1410,7 +1414,8 @@ def handle_sprint_streaming_response(
 
             # Memory answers and refusals call no LLM, so they record no provider or model.
             used_provider, used_model = llm_info.get("provider"), llm_info.get("model")
-            token_usage = meter.summary(
+            # A declined (out-of-scope) question costs nothing and shows no savings figures.
+            token_usage = None if source_type == "refusal" else meter.summary(
                 question=query, answer=answer,
                 conversation_chars=_history_chars(hist) if conversation_chars is None else conversation_chars,
             )
@@ -1425,8 +1430,8 @@ def handle_sprint_streaming_response(
                 llm_provider=used_provider,
                 llm_model=used_model,
                 regeneration_count=regeneration,
-                tokens_used=token_usage["used"],
-                tokens_baseline=token_usage["baseline"],
+                tokens_used=token_usage["used"] if token_usage else None,
+                tokens_baseline=token_usage["baseline"] if token_usage else None,
             )
             save_db.add(assistant_msg)
             save_db.commit()
@@ -1460,11 +1465,12 @@ def handle_sprint_streaming_response(
                 "is_in_rag_pipeline": False,
                 "external_search_used": False,
                 "follow_up_questions": [],
-                "token_usage": token_usage,
             }
-            balance = _charge_tokens(save_db, current_user, token_usage)
-            if balance is not None:
-                event["token_balance"] = balance
+            if token_usage is not None:
+                event["token_usage"] = token_usage
+                balance = _charge_tokens(save_db, current_user, token_usage)
+                if balance is not None:
+                    event["token_balance"] = balance
             if not current_user.is_admin:
                 event = public_done_event(event)
             yield f"data: {json.dumps(event)}\n\n"

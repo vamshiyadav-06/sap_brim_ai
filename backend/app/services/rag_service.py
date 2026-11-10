@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from backend.app.config import settings
 from backend.app.services.company_info import COMPANY_ANSWER, is_company_question
-from backend.app.services.sap_classifier import sap_classifier
+from backend.app.services.sap_classifier import NON_SAP_REFUSAL_RESPONSE, sap_classifier
 from backend.app.services.retrieval_service import retrieval_service
 from backend.app.services.reranking_service import reranking_service
 from backend.app.services.grounding_service import grounding_service
@@ -1370,6 +1370,8 @@ class RAGService:
         if analysis.small_talk:
             return corrected, analysis, decision(QueryRoute.EMOTIONAL_CASUAL, "LLM: greeting or small talk")
         if not analysis.about_sap:
+            if settings.SAP_ONLY_SCOPE:
+                return corrected, analysis, decision(QueryRoute.OUT_OF_DOMAIN, "LLM: not about SAP; declined (SAP-only scope)")
             return corrected, analysis, decision(QueryRoute.GENERAL, "LLM: general question, not about SAP")
         base = query_router.route(analysis.standalone_question, chat_history=chat_history)
         if base.route in (QueryRoute.SIMPLE_SAP, QueryRoute.MIXED_QUERY) and not formats:
@@ -1478,8 +1480,10 @@ class RAGService:
                 "follow_up_questions": [],
                 "selection_summary": "Answered from the fixed Clyptus company profile.",
             }
-        if not has_attachments and analysis is None:  # with an analysis the LLM already judged the topic
-            is_sap, refusal_msg = sap_classifier.classify(target_check_query)
+        declined_by_analysis = analysis is not None and selected_route == QueryRoute.OUT_OF_DOMAIN
+        if not has_attachments and (analysis is None or declined_by_analysis):
+            # With an analysis the LLM already judged the topic: a non-SAP question is declined, anything else passes.
+            is_sap, refusal_msg = (False, NON_SAP_REFUSAL_RESPONSE) if declined_by_analysis else sap_classifier.classify(target_check_query)
             if not is_sap:
                 logger.info("Query rejected by SAP classifier (route=%s)", selected_route.value)
                 return {
