@@ -3,6 +3,8 @@ import { ChevronLeft, ChevronRight, Plus, RefreshCw, Search, UserRound } from 'l
 import type { IndividualUser, IndividualUsersResponse } from '../../types';
 import { apiAdminCreateIndividualUser, apiAdminListIndividualUsers, apiAdminSetUserStatus } from '../../services/api';
 import { ConfirmDialog } from '../organisation/OrgDialog';
+import { RevealButton, usePasswordReveal } from '../ui/PasswordReveal';
+import { useRefreshSpinner } from '../ui/useRefreshSpinner';
 import { formatDate, formatDateTime } from '../organisation/orgFormat';
 import '../organisation/organisation.css';
 
@@ -24,6 +26,8 @@ export function IndividualUsersAdminPanel({ currentUserId }: { currentUserId?: s
   const [form, setForm] = useState({ name: '', email: '', password: '' });
   const [createError, setCreateError] = useState<string | null>(null);
   const [createBusy, setCreateBusy] = useState(false);
+  const passwordReveal = usePasswordReveal();
+  const spinner = useRefreshSpinner();
 
   const createUser = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -68,9 +72,12 @@ export function IndividualUsersAdminPanel({ currentUserId }: { currentUserId?: s
         if (cancelled) return;
         setData({ ...res, key: requestKey });
         setError(null);
+        spinner.stop();
       })
       .catch((err) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : 'Could not load users.');
+        if (cancelled) return;
+        setError(err instanceof Error ? err.message : 'Could not load users.');
+        spinner.stop();
       });
     return () => {
       cancelled = true;
@@ -117,8 +124,14 @@ export function IndividualUsersAdminPanel({ currentUserId }: { currentUserId?: s
           <p>Individual accounts only. Organisation members are managed by their organisation administrators.</p>
         </div>
         <div className="org-app-actions">
-          <button type="button" className="org-btn" onClick={() => setReloadCount((n) => n + 1)}>
-            <RefreshCw size={14} aria-hidden="true" /> Refresh
+          <button
+            type="button"
+            className="org-btn"
+            disabled={spinner.spinning}
+            aria-busy={spinner.spinning}
+            onClick={() => { spinner.start(); setReloadCount((n) => n + 1); }}
+          >
+            <RefreshCw size={14} aria-hidden="true" className={spinner.spinning ? 'animate-spin' : ''} /> Refresh
           </button>
           <button type="button" className="org-btn org-btn-primary" aria-expanded={creating} onClick={() => setCreating((v) => !v)}>
             <Plus size={14} aria-hidden="true" /> Create user
@@ -132,8 +145,11 @@ export function IndividualUsersAdminPanel({ currentUserId }: { currentUserId?: s
             onChange={(e) => setForm({ ...form, name: e.target.value })} />
           <input className="org-input" aria-label="New user email" type="email" placeholder="Email" value={form.email} autoComplete="off"
             onChange={(e) => setForm({ ...form, email: e.target.value })} />
-          <input className="org-input" aria-label="New user password" type="password" placeholder="Password (8+ characters)" value={form.password}
-            autoComplete="new-password" maxLength={72} onChange={(e) => setForm({ ...form, password: e.target.value })} />
+          <div className="org-password">
+            <input className="org-input" aria-label="New user password" type={passwordReveal.type} placeholder="Password (8+ characters)" value={form.password}
+              autoComplete="new-password" maxLength={72} onChange={(e) => setForm({ ...form, password: e.target.value })} />
+            <RevealButton visible={passwordReveal.visible} onToggle={passwordReveal.toggle} className="org-password-toggle" label="password" />
+          </div>
           <button type="submit" className="org-btn org-btn-primary" disabled={createBusy}>
             {createBusy ? 'Creating…' : 'Create account'}
           </button>

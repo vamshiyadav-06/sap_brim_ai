@@ -152,13 +152,33 @@ def prompt_text(db: Session, user_id: str, query: str) -> str:
     return "\n".join(lines)
 
 
+_STOPWORDS = frozenset(
+    "the and for you your are was were what who how why when where which that this these those with from "
+    "have has had can could would should will not but any all about into onto than then them they their "
+    "there here some more most much many very just also does did doing done get got give tell show make "
+    "explain please need want like know let say said ask asked question answer".split()
+)
+
+# Questions about the user themself ("who am I", "do you remember ...") that the saved memory can answer. Only these phrasings count: "I", "my" or "me" alone appear in every kind of question.
+_PERSONAL_RECALL = re.compile(
+    r"\b(who\s+am\s+i|what\s+do\s+you\s+(?:know|remember)\s+about\s+(?:me|us)|do\s+you\s+(?:remember|know)\s+(?:me|my|our)"
+    r"|what\s+did\s+i\s+(?:save|tell\s+you)"
+    r"|tell\s+me\s+about\s+(?:me|myself)|remind\s+me\s+(?:what|who|which))",
+    re.I,
+)
+
+
+def _topic_words(text: str) -> set:
+    return _words(text) - _STOPWORDS
+
+
 def matches_query(memory_text: str, query: str) -> bool:
     """Whether the question plausibly concerns the saved memory (lets personal questions through the SAP-only
-    scope check of Sprint)."""
+    scope check of Sprint). A question qualifies when it asks about the user themself in a recall phrasing, or
+    shares a real topic word with the saved text; pronouns and common words never qualify on their own."""
     if not memory_text:
         return False
-    asks_about_user = re.search(r"\b(my|mine|i|me|we|our|us)\b", query or "", re.I) is not None
-    return asks_about_user or bool(_words(query) & _words(memory_text))
+    return bool(_PERSONAL_RECALL.search(query or "")) or bool(_topic_words(query) & _topic_words(memory_text))
 
 
 # --- prompt injection -------------------------------------------------------------------------------

@@ -5,6 +5,7 @@ import { PageMeta } from '../../components/ui/PageMeta';
 import { useAuth } from '../../context/AuthContext';
 import iconOnly from '../../assets/clyptusap-icon.png';
 import { ApiError } from '../../services/api';
+import { RevealButton, usePasswordReveal } from '../../components/ui/PasswordReveal';
 
 export const AdminLoginPage: React.FC = () => {
   const { user, token, adminLogin } = useAuth();
@@ -13,6 +14,7 @@ export const AdminLoginPage: React.FC = () => {
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const reveal = usePasswordReveal();
   const [unlockKey, setUnlockKey] = useState('');
   const [unlockRequired, setUnlockRequired] = useState(false);
   const [error, setError] = useState<string | null>(() =>
@@ -142,13 +144,19 @@ export const AdminLoginPage: React.FC = () => {
                 <div className="relative">
                   <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500 dark:text-zinc-500 w-4 h-4 pointer-events-none" />
                   <input
-                    type="password"
+                    type={reveal.type}
                     required
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     placeholder="Enter admin password"
                     autoComplete="current-password"
-                    className="w-full bg-white dark:bg-[#12151f] border border-slate-200/80 dark:border-zinc-700/80 focus:border-amber-500 text-slate-900 dark:text-white rounded-xl pl-10 pr-3.5 py-2.5 text-xs focus:outline-none focus:ring-1 focus:ring-amber-500 transition font-mono tracking-wider"
+                    className="w-full bg-white dark:bg-[#12151f] border border-slate-200/80 dark:border-zinc-700/80 focus:border-amber-500 text-slate-900 dark:text-white rounded-xl pl-10 pr-11 py-2.5 text-xs focus:outline-none focus:ring-1 focus:ring-amber-500 transition font-mono tracking-wider"
+                  />
+                  <RevealButton
+                    visible={reveal.visible}
+                    onToggle={reveal.toggle}
+                    label="password"
+                    className="absolute right-1.5 top-1/2 -translate-y-1/2 w-8 h-8 grid place-items-center rounded-lg text-slate-500 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-zinc-800 transition"
                   />
                 </div>
               </div>

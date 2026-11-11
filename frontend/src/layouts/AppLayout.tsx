@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import {
   Building2,
@@ -63,6 +63,26 @@ const AccountWorkspace: React.FC = () => {
   });
   const [query, setQuery] = useState('');
   const [menuOpen, setMenuOpen] = useState(false);
+  const profileMenuRef = useRef<HTMLDivElement>(null);
+
+  // The profile dropdown closes on a click anywhere outside it, or on Escape.
+  useEffect(() => {
+    if (!menuOpen) return;
+    const closeOnOutsideClick = (event: MouseEvent | TouchEvent) => {
+      if (profileMenuRef.current && !profileMenuRef.current.contains(event.target as Node)) setMenuOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMenuOpen(false);
+    };
+    document.addEventListener('mousedown', closeOnOutsideClick);
+    document.addEventListener('touchstart', closeOnOutsideClick);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('mousedown', closeOnOutsideClick);
+      document.removeEventListener('touchstart', closeOnOutsideClick);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [menuOpen]);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [desktopCollapsed, setDesktopCollapsed] = useState(false);
   const [projectModalOpen, setProjectModalOpen] = useState(false);
@@ -649,7 +669,7 @@ const AccountWorkspace: React.FC = () => {
           </NavLink>
 
           {/* User Profile Card */}
-          <div className="relative mt-1">
+          <div className="relative mt-1" ref={profileMenuRef}>
             <button
               className="chatgpt-profile-btn"
               type="button"
@@ -779,9 +799,6 @@ const AccountWorkspace: React.FC = () => {
                 <Plus size={14} strokeWidth={2.4} />
                 New chat
               </button>
-              <span className="top-avatar">
-                {user?.avatar ? <img src={user.avatar} alt="" /> : userInitial}
-              </span>
             </div>
           </header>
         )}

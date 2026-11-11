@@ -666,7 +666,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSendMessage, onStop, isL
               : 'Ask Clyptus.AI about SAP BRIM: billing, invoicing, FI-CA or subscriptions…'
           }
           rows={1}
-          disabled={isLoading}
+          // Stays editable while an answer is generated (like ChatGPT); handleSubmit refuses to send until it ends.
           className="w-full bg-transparent text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 text-sm px-4 pt-3.5 pb-12 focus:outline-none resize-none max-h-48 min-h-[52px]"
         />
 
@@ -680,7 +680,6 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSendMessage, onStop, isL
                 ref={attachButtonRef}
                 type="button"
                 onClick={() => setShowAttachMenu((prev) => !prev)}
-                disabled={isLoading}
                 title="Add files, folders or links"
                 className={`flex items-center justify-center w-8 h-8 rounded-xl transition duration-150 disabled:opacity-40 disabled:cursor-not-allowed ${
                   showAttachMenu
@@ -766,7 +765,6 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSendMessage, onStop, isL
               <button
                 type="button"
                 onClick={toggleVoice}
-                disabled={isLoading}
                 title={isListening ? 'Stop recording' : 'Voice input'}
                 className={`flex items-center justify-center w-8 h-8 rounded-xl transition duration-150 disabled:opacity-40 disabled:cursor-not-allowed ${
                   isListening

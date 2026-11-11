@@ -1,4 +1,4 @@
-"""Deployment configuration: the two .env templates, the production Docker stack and the startup guard
+"""Deployment configuration: the .env template, the production Docker stack and the startup guard
 against template passwords. Pure file/settings checks: no database, network or Docker needed."""
 
 import ipaddress
@@ -10,8 +10,7 @@ import yaml
 
 from backend.app.config import ROOT_DIR, Settings, security_settings_errors
 
-DEV_TEMPLATE = ROOT_DIR / ".env.example"
-PROD_TEMPLATE = ROOT_DIR / ".env.production.example"
+PROD_TEMPLATE = ROOT_DIR / ".env.example"
 PROD_COMPOSE = ROOT_DIR / "docker-compose.prod.yml"
 BACKEND_DOCKERFILE = ROOT_DIR / "backend" / "Dockerfile"
 FRONTEND_DOCKERFILE = ROOT_DIR / "frontend" / "Dockerfile"
@@ -98,27 +97,6 @@ def test_completed_production_template_passes_the_startup_checks():
     assert security_settings_errors(settings) == []
     origins = [origin.strip() for origin in settings.ALLOWED_ORIGINS.split(",")]
     assert all(origin.startswith("https://") and "localhost" not in origin for origin in origins)
-
-
-# --- development template ------------------------------------------------------------------------------
-
-def test_development_template_database_url_matches_the_compose_values():
-    values = _values(DEV_TEMPLATE)
-    url = urlparse(values["DATABASE_URL"])
-    assert url.hostname == "127.0.0.1"
-    assert url.port == int(values["POSTGRES_HOST_PORT"])
-    assert url.password == values["SAP_BRIM_DB_PASSWORD"]
-    assert values["ENVIRONMENT"] == "development"
-
-
-def test_development_template_ships_no_secrets():
-    values = _values(DEV_TEMPLATE)
-    assert {key: values[key] for key in SECRET_KEYS if values.get(key)} == {}
-
-
-def test_both_templates_use_the_same_embedding_model():
-    # Vectors record their model name: a mismatch makes a restored development database unusable.
-    assert _values(DEV_TEMPLATE)["EMBEDDING_MODEL"] == _values(PROD_TEMPLATE)["EMBEDDING_MODEL"]
 
 
 # --- startup guard against template passwords ----------------------------------------------------------
@@ -212,40 +190,15 @@ def test_web_image_builds_the_app_and_proxies_the_api_with_streaming():
     assert _compose()["services"]["web"]["build"]["args"]["VITE_REGISTRATION_ENABLED"] == "${REGISTRATION_ENABLED:-False}"
 
 
-# --- staging template, gate and image pins ---------------------------------------------------------------
+# --- staging gate and image pins ---------------------------------------------------------------
 
-STAGING_TEMPLATE = ROOT_DIR / ".env.staging.example"
 GATE = ROOT_DIR / "frontend" / "caddy" / "access" / "basic_auth.caddy"
 LOCK = ROOT_DIR / "backend" / "requirements.lock"
 
 
-def test_staging_template_covers_compose_and_uses_only_known_keys():
-    values = _values(STAGING_TEMPLATE)
-    keys = [key for key, _ in _pairs(STAGING_TEMPLATE)]
-    assert len(keys) == len(set(keys))
-    assert _compose_variables(PROD_COMPOSE) <= set(values)
-    used = _compose_variables(PROD_COMPOSE) | set(Settings.model_fields) | {"COMPOSE_FILE", "COMPOSE_PROJECT_NAME"}
-    assert [key for key in values if key not in used] == []
-    assert {key: values[key] for key in SECRET_KEYS if values.get(key)} == {}
-    assert values["STAGING_BASIC_AUTH_HASH"] in ("", "''")
-
-
-def test_staging_template_is_locked_down():
-    values = _values(STAGING_TEMPLATE)
-    assert values["ENVIRONMENT"] == "production"
-    assert values["REGISTRATION_ENABLED"] == "False"
-    assert values["ACCESS_MODE"] == "basic_auth"
-    assert values["WEB_BIND"] == "127.0.0.1"
-    assert values["COMPOSE_PROJECT_NAME"] not in ("", "sap_brim", "sap_brim_prod")
-    assert values["ALLOWED_ORIGINS"] == f"https://{values['APP_DOMAIN']}"
-    url = urlparse(values["DATABASE_URL"])
-    assert (url.hostname, url.port, url.password) == ("postgres", 5432, values["SAP_BRIM_DB_PASSWORD"])
-    assert values["EMBEDDING_MODEL"] == _values(DEV_TEMPLATE)["EMBEDDING_MODEL"]
-
-
-def test_completed_staging_template_passes_the_staging_preflight(monkeypatch):
+def test_completed_template_passes_the_staging_preflight(monkeypatch):
     from backend.app.preflight import check_settings
-    values = _values(STAGING_TEMPLATE)
+    values = _values(PROD_TEMPLATE)
     values.pop("STAGING_BASIC_AUTH_HASH")
     monkeypatch.setenv("ACCESS_MODE", "basic_auth")
     monkeypatch.setenv("STAGING_BASIC_AUTH_USER", "staging")
@@ -262,7 +215,7 @@ def test_completed_staging_template_passes_the_staging_preflight(monkeypatch):
 
 def test_staging_preflight_rejects_missing_gate_or_public_bind(monkeypatch):
     from backend.app.preflight import check_settings
-    values = _values(STAGING_TEMPLATE)
+    values = _values(PROD_TEMPLATE)
     settings = _settings_from(
         values,
         JWT_SECRET=PRIVATE_JWT,
@@ -360,14 +313,13 @@ def _env_keys(path):
             if "=" in line and not line.lstrip().startswith("#")}
 
 
-def test_every_required_compose_variable_is_in_the_production_and_staging_templates():
-    """docker-compose.prod.yml fails fast on `${VAR:?...}`; the templates must list each such variable so an
+def test_every_required_compose_variable_is_in_the_template():
+    """docker-compose.prod.yml fails fast on `${VAR:?...}`; the template must list each such variable so an
     operator is told to fill it in (a missing key only surfaces at `docker compose up`)."""
     required = set(re.findall(r"\$\{(\w+):\?", PROD_COMPOSE.read_text(encoding="utf-8")))
     assert "REDIS_PASSWORD" in required
-    for template in (".env.production.example", ".env.staging.example"):
-        missing = required - _env_keys(ROOT_DIR / template)
-        assert not missing, f"{template} lacks {sorted(missing)}"
+    missing = required - _env_keys(PROD_TEMPLATE)
+    assert not missing, f".env.example lacks {sorted(missing)}"
 
 
 def test_staging_env_initialiser_generates_the_redis_password():
@@ -401,3 +353,15 @@ def test_backend_grace_period_outlasts_the_shutdown_drain():
     grace = _load_yaml_rejecting_duplicate_keys(PROD_COMPOSE)["services"]["backend"]["stop_grace_period"]
     seconds = int(re.fullmatch(r"(\d+)s", str(grace)).group(1))
     assert seconds > Settings().SHUTDOWN_DRAIN_SECONDS, "running answers would be killed before they are saved"
+
+
+def test_backend_defaults_to_production_and_closed_sign_up_even_when_env_omits_them():
+    env = _compose()["services"]["backend"]["environment"]
+    assert env["ENVIRONMENT"] == "${ENVIRONMENT:-production}"
+    assert env["REGISTRATION_ENABLED"] == "${REGISTRATION_ENABLED:-False}"
+
+
+def test_web_container_drops_every_capability_but_port_binding():
+    web = _compose()["services"]["web"]
+    assert "no-new-privileges:true" in web["security_opt"]
+    assert web["cap_drop"] == ["ALL"] and web["cap_add"] == ["NET_BIND_SERVICE"]

@@ -6,6 +6,7 @@ import {
   apiAdminListLoginLockouts,
 } from '../../services/api';
 import type { AdminSecurityControls, LoginLockout } from '../../services/api';
+import { useRefreshSpinner } from '../ui/useRefreshSpinner';
 
 export const AuthenticationControls: React.FC = () => {
   const [controls, setControls] = useState<AdminSecurityControls | null>(null);
@@ -13,6 +14,7 @@ export const AuthenticationControls: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [issued, setIssued] = useState<{ email: string; key: string; expires_at: string } | null>(null);
+  const spinner = useRefreshSpinner();
 
   const refresh = useCallback(async () => {
     setError(null);
@@ -53,8 +55,15 @@ export const AuthenticationControls: React.FC = () => {
           </h2>
           <p className="mt-1 text-sm text-slate-600 dark:text-zinc-400">Review locked accounts and issue one-time recovery keys.</p>
         </div>
-        <button type="button" onClick={() => void refresh()} className="inline-flex items-center gap-2 rounded-lg border border-slate-300 dark:border-zinc-700 px-3 py-2 text-sm" aria-label="Refresh authentication controls">
-          <RefreshCw size={15} /> Refresh
+        <button
+          type="button"
+          onClick={() => { spinner.start(); void refresh().finally(spinner.stop); }}
+          disabled={spinner.spinning}
+          aria-busy={spinner.spinning}
+          className="inline-flex items-center gap-2 rounded-lg border border-slate-300 dark:border-zinc-700 px-3 py-2 text-sm disabled:opacity-70 disabled:cursor-wait"
+          aria-label="Refresh authentication controls"
+        >
+          <RefreshCw size={15} className={spinner.spinning ? 'animate-spin' : ''} /> Refresh
         </button>
       </div>
 

@@ -457,10 +457,27 @@ def _sprint_memory(
     return memory
 
 
+_FOLLOW_UP_WORDS = re.compile(
+    r"\b(it|its|this|that|these|those|them|they|above|previous|earlier|same|again|further|more|"
+    r"elaborate|continue|detail|details|example|examples|simpler|shorter|steps?)\b|^\s*(and|also|so|then|ok|okay)\b",
+    re.I,
+)
+
+
+def _looks_like_follow_up(query: str) -> bool:
+    """A short message that leans on the conversation ("explain it in more detail", "and the steps?"). Only such
+    a message inherits the SAP topic of earlier questions: a new subject ("tell me a joke", "weather in Paris")
+    does not become SAP just because the chat so far was about SAP."""
+    text = (query or "").strip()
+    if not text or len(text.split()) > 12:
+        return False
+    return _FOLLOW_UP_WORDS.search(text) is not None
+
+
 def _sprint_allowed(query: str, chat_history, attachments) -> bool:
     attachment_text = "\n".join(str(item.get("text") or "") for item in (attachments or []))
     allowed, _ = sap_classifier.classify(f"{query}\n{attachment_text}")
-    if not allowed and chat_history:
+    if not allowed and chat_history and _looks_like_follow_up(query):
         prior_user_questions = [
             item.get("content", "") for item in chat_history if item.get("role") == "user"
         ][-3:]
@@ -1143,7 +1160,9 @@ def handle_streaming_response(
             memory_text = _saved_memory_text(save_db, current_user.id, query)
             # Another language: ask the pipeline in English (SAP-topic check and retrieval work on English),
             # verify the English draft, then translate the finished answer for the user.
-            language = languages.normalize(getattr(current_user, "preferred_language", None))
+            preferred = languages.normalize(getattr(current_user, "preferred_language", None))
+            # This message decides first (explicit request, then its script), then the Settings language.
+            language, _unsupported = languages.resolve_answer_language(preferred, "", query)
             translate_answer = not languages.is_english(language)
             rag_query = languages.question_to_english(query, languages.question_language_of(current_user))
             rag_events = user_memory.scoped(with_generation_context(_invoke_rag_stream(
@@ -1160,6 +1179,11 @@ def handle_streaming_response(
                     if not current_user.is_admin:
                         event["message"] = "Thinking..." if event.get("stage") != "generating" else "Generating response..."
 
+                elif event_type == "answer_language":
+                    language, _unsupported = languages.resolve_answer_language(preferred, event.get("requested"), query)
+                    translate_answer = not languages.is_english(language)
+                    continue
+
                 elif event_type == "token":
                     accumulated_text += event.get("content", "")
                     if translate_answer:
@@ -1171,7 +1195,10 @@ def handle_streaming_response(
 
                 elif event_type == "done":
                     if translate_answer:
-                        translated = languages.answer_to_language(event.get("answer") or accumulated_text, language)
+                        original = event.get("answer") or accumulated_text
+                        translated = languages.try_answer_to_language(original, language)
+                        if translated is None:  # no translation possible: say so and point to Settings
+                            translated = original + languages.translation_failed_note(language)
                         event["answer"] = translated
                         accumulated_text = translated
                         for start in range(0, len(translated), 48):
@@ -1337,7 +1364,7 @@ def handle_sprint_streaming_response(
         try:
             yield f"data: {json.dumps({'type': 'status', 'stage': 'generating', 'message': 'Generating response...'})}\n\n"
             memory_text = "" if memory.get("answer") else _saved_memory_text(save_db, current_user.id, query)
-            language = languages.normalize(getattr(current_user, "preferred_language", None))
+            preferred = languages.normalize(getattr(current_user, "preferred_language", None))
             # The SAP-topic check works on English; the model still gets the question as the user wrote it.
             scope_query = (languages.question_to_english(query, languages.question_language_of(current_user))
                            if not memory.get("answer") else query)
@@ -1346,6 +1373,12 @@ def handle_sprint_streaming_response(
             route = _sprint_route(scope_query, hist, attachments, memory, analysis=analysis)
             if route == "refusal" and user_memory.matches_query(memory_text, query):
                 route = "sprint"  # a question about what the user saved is not off-topic
+            # This message decides the answer language (explicit request, then its script), then Settings.
+            language, unsupported_language = languages.resolve_answer_language(
+                preferred, analysis.requested_language if analysis is not None else "", query)
+            language_notice = languages.unsupported_notice(unsupported_language) if unsupported_language else None
+            if language_notice:
+                route = "refusal"  # asked for a language that is not supported: say so, point to Settings
             answer_query = analysis.corrected_question if analysis is not None else query
             doc_formats = _sprint_formats(query, analysis, attachments, memory) if route in ("sprint", "general") else []
             if doc_formats:  # the content goes into the file, not the chat
@@ -1399,7 +1432,7 @@ def handle_sprint_streaming_response(
                 elif route == "clarification":
                     answer = analysis.clarification_question
                 else:
-                    answer = NON_SAP_REFUSAL_RESPONSE
+                    answer = language_notice or NON_SAP_REFUSAL_RESPONSE
                 source_type = "conversational" if route in ("company", "clarification") else route
                 verification_status = "unverified"
                 accumulated_text = answer

@@ -72,6 +72,13 @@ describe('AppLayout sidebar navigation', () => {
     expect(header).toContain('aria-label="Collapse sidebar"');
   });
 
+  it('shows no initial-letter avatar in the top bar (the profile card in the sidebar keeps it)', () => {
+    const html = renderLayout({ id: 'e', email: 'e@x.com', name: 'Eve' });
+    expect(html).not.toContain('top-avatar');
+    expect(html).toContain('chatgpt-avatar');
+    expect(html).toContain('New chat');
+  });
+
   it.each<User>([
     { id: 'i', email: 'i@x.com', name: 'I', account_type: 'individual' },
     { id: 'a', email: 'a@x.com', name: 'A', is_admin: true },

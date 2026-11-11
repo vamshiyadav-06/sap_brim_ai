@@ -1,6 +1,6 @@
 """Deployment preflight: validates the backend configuration before containers are (re)started.
 
-    python -m backend.app.preflight [--check-db] [--expect-staging]
+    python -m backend.app.preflight [--check-db] [--expect-staging | --expect-production]
 
 Prints one line per check ("OK", "WARN" or "FAIL" plus the setting NAME, never a value) and exits 1 when
 any check fails. scripts/staging/deploy.sh runs it inside the freshly built backend image, so a broken
@@ -46,7 +46,7 @@ def _provider_key(s: Settings, provider: str) -> str:
     return getattr(s, PROVIDER_KEYS[provider], "") or s.LLM_API_KEY or next(iter(_fallback_keys(s, provider)), "")
 
 
-def check_settings(s: Settings, expect_staging: bool = False) -> Report:
+def check_settings(s: Settings, expect_staging: bool = False, expect_production: bool = False) -> Report:
     report = Report()
     for problem in security_settings_errors(s):
         report.fail(problem)
@@ -80,6 +80,17 @@ def check_settings(s: Settings, expect_staging: bool = False) -> Report:
     if s.ENVIRONMENT.lower() != "production":
         (report.fail if expect_staging else report.warn)(
             "ENVIRONMENT is not 'production': API docs are public and HTTPS is not enforced")
+    if expect_production:
+        if s.ENVIRONMENT.lower() != "production":
+            report.fail("ENVIRONMENT must be 'production' on a production deployment")
+        if not s.RATE_LIMIT_ENABLED:
+            report.fail("RATE_LIMIT_ENABLED must be True in production")
+        if not s.REDIS_URL:
+            report.fail("REDIS_URL is not set: rate limits and login lockout would be per-process only")
+        if s.REGISTRATION_ENABLED:
+            report.warn("REGISTRATION_ENABLED is True: anyone can create an account (no e-mail verification)")
+        if os.getenv("ACCESS_MODE", "open") != "open":
+            report.warn("ACCESS_MODE is not 'open': the public site sits behind the staging password gate")
     if expect_staging and s.REGISTRATION_ENABLED:
         report.fail("REGISTRATION_ENABLED must be False on staging (testers get accounts from an admin)")
     if expect_staging and not s.RATE_LIMIT_ENABLED:
@@ -119,11 +130,14 @@ def _connect(s: Settings) -> None:
 def main(argv: Optional[List[str]] = None, settings_factory: Callable[[], Settings] = Settings) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--check-db", action="store_true", help="also connect to DATABASE_URL")
-    parser.add_argument("--expect-staging", action="store_true",
-                        help="require production mode, closed sign-up and rate limits")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--expect-staging", action="store_true",
+                      help="require production mode, closed sign-up and rate limits")
+    mode.add_argument("--expect-production", action="store_true",
+                      help="require production mode, rate limits and a shared Redis store")
     args = parser.parse_args(argv)
     s = settings_factory()
-    report = check_settings(s, expect_staging=args.expect_staging)
+    report = check_settings(s, expect_staging=args.expect_staging, expect_production=args.expect_production)
     if args.check_db:
         db_report = check_database(s)
         report.lines.extend(db_report.lines)

@@ -108,3 +108,24 @@ def test_create_user_script_creates_a_usable_individual_account_once():
         db.query(User).filter(User.email == email.lower()).delete()
         db.commit()
         db.close()
+
+
+def test_production_mode_requires_rate_limits_and_a_shared_store():
+    ok = check_settings(_settings(REDIS_URL="redis://:x@redis:6379/0"), expect_production=True)
+    assert not ok.failed, ok.lines
+
+    bad = check_settings(_settings(ENVIRONMENT="development", RATE_LIMIT_ENABLED=False, REDIS_URL=""),
+                         expect_production=True)
+    text = " ".join(bad.lines)
+    assert bad.failed
+    assert "ENVIRONMENT must be 'production'" in text
+    assert "RATE_LIMIT_ENABLED must be True" in text
+    assert "REDIS_URL is not set" in text
+
+
+def test_production_mode_warns_about_open_sign_up(monkeypatch):
+    monkeypatch.delenv("ACCESS_MODE", raising=False)
+    report = check_settings(_settings(REGISTRATION_ENABLED=True, REDIS_URL="redis://:x@redis:6379/0"),
+                            expect_production=True)
+    assert not report.failed
+    assert any(line.startswith("WARN") and "REGISTRATION_ENABLED" in line for line in report.lines)

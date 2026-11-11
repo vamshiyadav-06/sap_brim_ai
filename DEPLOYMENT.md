@@ -99,7 +99,7 @@ sudo chown -R 1000:1000 knowledge_base  # otherwise (or set APP_UID in .env to y
 ## 5. Create the `.env` file
 
 ```sh
-cp .env.production.example .env
+cp .env.example .env
 chmod 600 .env
 ```
 
@@ -139,8 +139,12 @@ Everything else can stay as it is. Notes:
 **If you will restore a backup in step 7 (option A), do that first and start the full stack afterwards.**
 
 ```sh
-docker compose up -d --build
+scripts/production/deploy.sh
 ```
+
+The script refuses to continue unless `.env` is safe: it rejects template placeholders (including the database superuser password, which nothing else checks), a missing `ENVIRONMENT=production`, a mismatch between `ALLOWED_ORIGINS` and `APP_DOMAIN`, reused or short secrets, a `DATABASE_URL` password that differs from `SAP_BRIM_DB_PASSWORD`, and a missing LLM key. It then builds the images, runs the backend preflight (`python -m backend.app.preflight --expect-production --check-db`) inside the new image, takes a verified backup if an installation is already running, starts the new version and waits for the health check. It never deletes a volume. Run `python3 scripts/production/validate_env.py` on its own at any time to check `.env`.
+
+(`docker compose up -d --build` still works, but skips all those checks; the compose file itself defaults the backend to `ENVIRONMENT=production` and closed sign-up.)
 
 The first build downloads Python packages, PyTorch (CPU), the embedding model and the OCR models, and builds the React app. It takes about 10-20 minutes; later builds reuse the cache.
 
@@ -251,13 +255,13 @@ Container logs are rotated automatically (5 files of 10 MB per container).
 
 ### Update to a new version
 
-Back up first (next section), then:
-
 ```sh
 git pull
-docker compose up -d --build
+scripts/production/deploy.sh            # validates .env, preflights, backs up, then replaces the running version
 docker compose ps                       # backend becomes "healthy" again after the migrations ran
 ```
+
+The script records the deployed image tag in `.deploy/production-image-tag` and prints the one-line rollback command (`IMAGE_TAG=<previous> docker compose up -d`) at the end.
 
 The backend applies new database migrations when it starts. If the backend does not come back, check `docker compose logs backend` before doing anything else.
 
@@ -276,19 +280,16 @@ Do not run `docker compose down -v` (it deletes the database volume).
 
 ### Backups
 
-Back up the database daily and keep copies **off the server**. A manual backup:
+Back up the database daily and keep copies **off the server**. `scripts/production/backup.sh` writes a dump, proves it can be read back (`pg_restore --list`), archives `knowledge_base/documents/`, optionally uploads both, and prunes files older than 14 days. Files are `0600` in a `0700` directory.
 
 ```sh
-mkdir -p /opt/clyptus/backups
-docker compose exec -T postgres pg_dump -U sap_brim_ai -d sap_brim_ai -Fc > /opt/clyptus/backups/sap_brim_ai-$(date +%F-%H%M).dump
-ls -lh /opt/clyptus/backups               # the file must not be empty
+scripts/production/backup.sh                                   # one backup now; the file must not be empty
+BACKUP_UPLOAD_CMD='rclone copy "$1" remote:clyptus-backups'   scripts/production/install-backup-cron.sh                    # daily at 02:00, log in .deploy/backup.log
 ```
 
-Daily at 02:00 with 14 days kept (`crontab -e`):
+`BACKUP_UPLOAD_CMD` is run once per new file with the file as `$1` (any command: `rclone`, `rsync`, `aws s3 cp`). Without it the backup stays on the server and the script warns. Settings: `BACKUP_DIR` (default `/opt/clyptus/backups`), `BACKUP_KEEP_DAYS`.
 
-```cron
-0 2 * * * cd /opt/clyptus/app && docker compose exec -T postgres pg_dump -U sap_brim_ai -d sap_brim_ai -Fc > /opt/clyptus/backups/sap_brim_ai-$(date +\%F).dump && find /opt/clyptus/backups -name '*.dump' -mtime +14 -delete
-```
+**Prove the restore.** After the first backup and then monthly, run `scripts/production/restore-check.sh`: it loads the newest dump into a scratch database next to the live one, counts tables and users, and drops only that scratch database.
 
 Also back up `.env` (it holds the only copy of your secrets) and `knowledge_base/documents/` (admin uploads). The backups contain user data and chat history: store them encrypted and with restricted access.
 
@@ -339,9 +340,15 @@ A slot lasts as long as the answer, including an answer that keeps generating af
 
 These numbers are conservative defaults, not measured capacity. The provider quotas (Groq's free tier allows about 8,000 tokens a minute) usually limit throughput before the server does. Measure on staging with `scripts/staging/test-load.py` and the approved providers, then adjust.
 
+### Monitoring and Redis
+
+Point an uptime monitor at `https://<domain>/health` and alert on anything but HTTP 200. The endpoint returns 503 when the database or the Redis rate-limit store is unreachable.
+
+If Redis stops after the backend started, rate limits and the login lockout keep working **per process** (the single backend worker) instead of failing every request; the backend logs `Shared rate-limit storage failed ... using per-process limits` once a minute and switches back by itself when Redis returns. Redis restarts on its own (`restart: unless-stopped`); `/health` stays 503 until it is back, which is what the alert is for.
+
 ### Fallback API keys
 
-Each provider can have up to three extra keys for the worst case: `GROQ_API_KEY_FALLBACK_1` to `_3`, `GEMINI_API_KEY_FALLBACK_1` to `_3`, `OPENROUTER_API_KEY_FALLBACK_1` to `_3`. The names are in `.env.production.example`; leave a value empty to leave that slot unused. Put a key in, run `docker compose up -d backend`, and it is used automatically; nothing else needs changing.
+Each provider can have up to three extra keys for the worst case: `GROQ_API_KEY_FALLBACK_1` to `_3`, `GEMINI_API_KEY_FALLBACK_1` to `_3`, `OPENROUTER_API_KEY_FALLBACK_1` to `_3`. The names are in `.env.example`; leave a value empty to leave that slot unused. Put a key in, run `docker compose up -d backend`, and it is used automatically; nothing else needs changing.
 
 Order: the normal key first, then fallback 1, 2, 3. The next key is tried **only** when the key before it is rejected (401/403), out of credit (402) or out of quota (429). A problem that is not the key's fault (an empty reply, a too-long prompt) does not use up the other keys. A key that failed is skipped for a while (a rejected key for an hour, a rate limit for the provider's retry time) while the next key answers. Only when every key of a provider fails does the request move on to the next provider (Groq, then Gemini, then OpenRouter, then web search). A streamed answer never changes key after text was sent. Use a separate key for each slot, ideally from a separate account, since keys of one account share one quota. Key values are never logged. The OpenRouter tier also needs paid models in `LLM_OPENROUTER_MODELS` or `LLM_ALLOW_FREE_TIER=True`.
 
@@ -375,7 +382,10 @@ Order: the normal key first, then fallback 1, 2, 3. The next key is tried **only
 - [ ] `ENVIRONMENT=production`, `ALLOWED_ORIGINS=https://<domain>`, `APP_DOMAIN=<domain>`.
 - [ ] `.env` is `chmod 600` and backed up somewhere safe.
 - [ ] The knowledge base is loaded and source tiers are set (Scholar answers from documents).
-- [ ] A daily database backup runs, and one restore has been tested.
+- [ ] `scripts/production/deploy.sh` passed (env check, preflight).
+- [ ] A daily database backup runs with `BACKUP_UPLOAD_CMD` set (copies off the server), and `scripts/production/restore-check.sh` has succeeded once.
+- [ ] An uptime monitor alerts on `/health`.
+- [ ] `.env` is not inside a cloud-synced folder (OneDrive, Dropbox, iCloud) and no `.env*.bak` copies exist.
 - [ ] Ports 80 and 443 are open; nothing else is published (PostgreSQL and the backend are internal).
 - [ ] The smoke test in [section 8](#8-sign-in-and-check-the-deployment) passes.
 - [ ] Owner decisions in `HUMAN_ACTIONS.md` (knowledge-base licensing, approved LLM providers) are settled.

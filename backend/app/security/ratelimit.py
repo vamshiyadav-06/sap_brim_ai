@@ -134,8 +134,36 @@ def _build_backend():
 
 
 class RateLimiter:
+    # After Redis fails, skip it for this many seconds (every call would otherwise wait for its timeout).
+    REDIS_RETRY_SECONDS = 10.0
+    LOG_EVERY_SECONDS = 60.0
+
     def __init__(self, backend=None):
         self.backend = backend or _build_backend()
+        # Used while shared storage is down: limits stay enforced per process instead of every
+        # rate-limited request failing with a 500. /health reports the outage (check()).
+        self._fallback = MemoryBackend(max_keys=settings.RATE_LIMIT_MAX_KEYS)
+        self._redis_retry_at = 0.0
+        self._last_logged = 0.0
+
+    def _store(self, operation: str, *args):
+        if isinstance(self.backend, MemoryBackend):
+            return getattr(self.backend, operation)(*args)
+        now = time.monotonic()
+        if now >= self._redis_retry_at:
+            try:
+                result = getattr(self.backend, operation)(*args)
+                if self._redis_retry_at:
+                    logger.warning("Shared rate-limit storage is reachable again")
+                    self._redis_retry_at = 0.0
+                return result
+            except Exception as exc:
+                self._redis_retry_at = now + self.REDIS_RETRY_SECONDS
+                if now - self._last_logged >= self.LOG_EVERY_SECONDS or not self._last_logged:
+                    self._last_logged = now
+                    logger.error("Shared rate-limit storage failed (%s); using per-process limits until it recovers",
+                                 type(exc).__name__)
+        return getattr(self._fallback, operation)(*args)
 
     @property
     def shared(self) -> bool:
@@ -154,7 +182,7 @@ class RateLimiter:
     def allow(self, scope: str, identity: str, limit: int, window: float = 60) -> bool:
         if not settings.RATE_LIMIT_ENABLED:
             return True
-        return self.backend.hit(f"{scope}:{identity}", limit, window)
+        return self._store("hit", f"{scope}:{identity}", limit, window)
 
     # Login lockout: too many failed passwords for one account within the window locks that account.
     @staticmethod
@@ -164,16 +192,18 @@ class RateLimiter:
     def account_locked(self, email: str) -> bool:
         if not settings.RATE_LIMIT_ENABLED:
             return False
-        return self.backend.count(self._account_key(email), settings.LOGIN_LOCKOUT_WINDOW_SECONDS) >= settings.LOGIN_MAX_FAILURES
+        return self._store("count", self._account_key(email), settings.LOGIN_LOCKOUT_WINDOW_SECONDS) >= settings.LOGIN_MAX_FAILURES
 
     def record_login_failure(self, email: str) -> None:
         if settings.RATE_LIMIT_ENABLED:
-            self.backend.hit(self._account_key(email), 10_000, settings.LOGIN_LOCKOUT_WINDOW_SECONDS)
+            self._store("hit", self._account_key(email), 10_000, settings.LOGIN_LOCKOUT_WINDOW_SECONDS)
 
     def clear_login_failures(self, email: str) -> None:
-        self.backend.clear(self._account_key(email))
+        self._store("clear", self._account_key(email))
+        self._fallback.clear(self._account_key(email))
 
     def reset(self) -> None:
+        self._fallback.reset()
         self.backend.reset()
 
 

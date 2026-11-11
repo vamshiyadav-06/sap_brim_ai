@@ -121,8 +121,7 @@ SAP_BRIM_Ai/
 ├── docker-compose.yml        # Development: PostgreSQL + pgvector only
 ├── docker-compose.prod.yml   # Production: postgres + backend + web (Caddy, HTTPS)
 ├── docker/postgres/init/     # First-start script: sap_brim_ai role/database, vector extension
-├── .env.example              # Development settings template for Compose and the backend (copy to .env)
-├── .env.production.example   # Server settings template for docker-compose.prod.yml (copy to .env)
+├── .env.example              # Production settings template for docker-compose.prod.yml (copy to .env; local dev: see SETUP.md §4)
 ├── .python-version           # Python 3.12
 ├── pytest.ini                # Pytest configuration ("live" marker)
 ├── .pre-commit-config.yaml   # Ruff checks for backend/
@@ -354,8 +353,8 @@ In development the backend and frontend run on the host. Never use `docker compo
 Requirements: Git, Docker, Python 3.12, Node.js 22.12+, and at least one LLM API key (Groq, Gemini or OpenRouter). The full walkthrough is in **[SETUP.md](SETUP.md)**; the short version, from the repository root:
 
 ```sh
-# 1. Settings: copy the template, then set passwords, JWT_SECRET, admin account and API keys
-cp .env.example .env                      # Windows: Copy-Item .env.example .env
+# 1. Settings: create .env from the development example in SETUP.md section 4.4
+#    (.env.example is the production template, not the local-dev one)
 
 # 2. Database
 docker compose up -d postgres
@@ -505,7 +504,7 @@ Backend tests run against a separate database whose name must end in `_test` (`s
 
 ```sh
 git clone https://github.com/vamshiyadav-06/SAP_chatbot.git && cd SAP_chatbot
-cp .env.production.example .env      # set the domain, passwords, JWT_SECRET, admin account and API keys
+cp .env.example .env      # set the domain, passwords, JWT_SECRET, admin account and API keys
 docker compose up -d --build         # .env selects docker-compose.prod.yml
 ```
 
@@ -515,7 +514,7 @@ docker compose up -d --build         # .env selects docker-compose.prod.yml
 | Backend | `backend/Dockerfile`: Python 3.12, CPU-only PyTorch, embedding and OCR models baked in, non-root user. Runs `alembic upgrade head`, then one uvicorn worker. Not published; trusts Caddy's forwarded headers on the private Docker network. |
 | Database | `pgvector/pgvector:pg16` with the `pgdata` volume. Not published. |
 
-`ENVIRONMENT=production` disables the API docs, requires HTTPS (except `/health`), adds HSTS, and refuses to start with an empty or short `JWT_SECRET`, a `change-me` database or admin password, or localhost/wildcard `ALLOWED_ORIGINS`. Templates: [`.env.production.example`](.env.production.example) (server), [`.env.example`](.env.example) (local development), [`frontend/.env.example`](frontend/.env.example) (optional frontend overrides). Hosting without Docker is described in [SETUP.md §15](SETUP.md#15-deploying-to-a-server).
+`ENVIRONMENT=production` disables the API docs, requires HTTPS (except `/health`), adds HSTS, and refuses to start with an empty or short `JWT_SECRET`, a `change-me` database or admin password, or localhost/wildcard `ALLOWED_ORIGINS`. Templates: [`.env.example`](.env.example) (server), [`frontend/.env.example`](frontend/.env.example) (optional frontend overrides). Hosting without Docker is described in [SETUP.md §15](SETUP.md#15-deploying-to-a-server).
 
 Owner actions to complete before going live, such as secret rotation, knowledge-base licensing and provider approval, are listed in [HUMAN_ACTIONS.md](HUMAN_ACTIONS.md).
 

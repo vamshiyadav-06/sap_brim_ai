@@ -1,3 +1,4 @@
+import hashlib
 import os
 import tempfile
 from pathlib import Path
@@ -300,17 +301,24 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
-# Credentials that were committed to this repository, so anyone can read them.
-PUBLISHED_SECRETS = frozenset({
-    "sap-super-secret-jwt-key-2026-production-ready",
-    "sap-admin-dev-secret-key-999",
-    "Vamshi@06",
+# SHA-256 of credentials that were committed to this repository (so anyone can read them). Only the hashes
+# are kept here: the startup check refuses these values without publishing them a second time.
+PUBLISHED_SECRET_HASHES = frozenset({
+    "1259039c4b8b4ddd7d8acb33545d265964ff84ab57a8bf691e46dab0c7eefc18",
+    "e28e503476b9a58e4293d119a4a3b4b9f55253eaae96e109d7917b05d56632d3",
+    "9d360e6668c53d7abdeabb39e0bd2c9a926fba8d8ec2480460d561db35730f60",
 })
+
+
+def is_published_secret(value: str) -> bool:
+    return hashlib.sha256((value or "").encode("utf-8")).hexdigest() in PUBLISHED_SECRET_HASHES
+
+
 MIN_SECRET_LENGTH = 32
 # Tokens are signed with the shared JWT_SECRET, so only HMAC algorithms make sense; never "none".
 ALLOWED_JWT_ALGORITHMS = frozenset({"HS256", "HS384", "HS512"})
 MIN_ADMIN_PASSWORD_LENGTH = 12
-# Placeholder passwords in .env.example / .env.production.example. Production refuses to start with them.
+# Placeholder passwords in .env.example. Production refuses to start with them.
 TEMPLATE_PLACEHOLDER_MARKERS = ("change-me", "change_me", "changeme")
 
 
@@ -336,14 +344,14 @@ def security_settings_errors(s: Settings = settings) -> list:
         errors.append(f"JWT_ALGORITHM must be one of {', '.join(sorted(ALLOWED_JWT_ALGORITHMS))} (a shared-secret HMAC algorithm).")
     if not s.JWT_ISSUER.strip() or not s.JWT_AUDIENCE.strip():
         errors.append("JWT_ISSUER and JWT_AUDIENCE must not be empty.")
-    if len(s.JWT_SECRET) < MIN_SECRET_LENGTH or s.JWT_SECRET in PUBLISHED_SECRETS:
+    if len(s.JWT_SECRET) < MIN_SECRET_LENGTH or is_published_secret(s.JWT_SECRET):
         errors.append(f"JWT_SECRET must be a private random value of at least {MIN_SECRET_LENGTH} characters.")
-    if s.ADMIN_API_KEY and (len(s.ADMIN_API_KEY) < MIN_SECRET_LENGTH or s.ADMIN_API_KEY in PUBLISHED_SECRETS):
+    if s.ADMIN_API_KEY and (len(s.ADMIN_API_KEY) < MIN_SECRET_LENGTH or is_published_secret(s.ADMIN_API_KEY)):
         errors.append(f"ADMIN_API_KEY must be empty or a private random value of at least {MIN_SECRET_LENGTH} characters.")
     if bool(s.SUPER_ADMIN_EMAIL.strip()) != bool(s.SUPER_ADMIN_PASSWORD):
         errors.append("Set both SUPER_ADMIN_EMAIL and SUPER_ADMIN_PASSWORD, or neither.")
     elif s.SUPER_ADMIN_PASSWORD and (
-        len(s.SUPER_ADMIN_PASSWORD) < MIN_ADMIN_PASSWORD_LENGTH or s.SUPER_ADMIN_PASSWORD in PUBLISHED_SECRETS
+        len(s.SUPER_ADMIN_PASSWORD) < MIN_ADMIN_PASSWORD_LENGTH or is_published_secret(s.SUPER_ADMIN_PASSWORD)
     ):
         errors.append(f"SUPER_ADMIN_PASSWORD must be a private password of at least {MIN_ADMIN_PASSWORD_LENGTH} characters.")
     if s.ENVIRONMENT.lower() == "production":

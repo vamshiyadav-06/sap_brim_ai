@@ -3,7 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
-[[ -f .env ]] || { echo "Missing .env; start with .env.staging.example and init-env.sh." >&2; exit 1; }
+[[ -f .env ]] || { echo "Missing .env; start with .env.example and init-env.sh." >&2; exit 1; }
 python3 - <<'PY'
 from pathlib import Path
 import re

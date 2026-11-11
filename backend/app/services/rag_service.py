@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from backend.app.config import settings
 from backend.app.services.company_info import COMPANY_ANSWER, is_company_question
+from backend.app.services import languages
 from backend.app.services.sap_classifier import NON_SAP_REFUSAL_RESPONSE, sap_classifier
 from backend.app.services.retrieval_service import retrieval_service
 from backend.app.services.reranking_service import reranking_service
@@ -1365,6 +1366,8 @@ class RAGService:
             return QueryRoutingDecision(route=route, reason=reason, cleaned_query=cleaned, requires_retrieval=retrieval,
                                         output_formats=formats if route in (QueryRoute.COMPLEX_SAP, QueryRoute.GENERAL) else [])
 
+        if analysis.requested_language and languages.code_for(analysis.requested_language) is None:
+            return corrected, analysis, decision(QueryRoute.OUT_OF_DOMAIN, "Answer language is not supported")
         if analysis.needs_clarification:
             return corrected, analysis, decision(QueryRoute.CLARIFICATION, "Genuinely ambiguous; asking the user")
         if analysis.small_talk:
@@ -1379,6 +1382,14 @@ class RAGService:
         return corrected, analysis, decision(
             QueryRoute.COMPLEX_SAP, "LLM: SAP question for the retrieval pipeline", True, analysis.standalone_question
         )
+
+    @staticmethod
+    def _decline_message(analysis) -> str:
+        """The reply for a declined question: the language notice when the user asked for an unsupported answer
+        language, otherwise the SAP-only message."""
+        if analysis is not None and analysis.requested_language and languages.code_for(analysis.requested_language) is None:
+            return languages.unsupported_notice(analysis.requested_language)
+        return NON_SAP_REFUSAL_RESPONSE
 
     @staticmethod
     def _documents_message(content: str, formats: List[str], owner_id, request: str) -> str:
@@ -1483,7 +1494,7 @@ class RAGService:
         declined_by_analysis = analysis is not None and selected_route == QueryRoute.OUT_OF_DOMAIN
         if not has_attachments and (analysis is None or declined_by_analysis):
             # With an analysis the LLM already judged the topic: a non-SAP question is declined, anything else passes.
-            is_sap, refusal_msg = (False, NON_SAP_REFUSAL_RESPONSE) if declined_by_analysis else sap_classifier.classify(target_check_query)
+            is_sap, refusal_msg = (False, self._decline_message(analysis)) if declined_by_analysis else sap_classifier.classify(target_check_query)
             if not is_sap:
                 logger.info("Query rejected by SAP classifier (route=%s)", selected_route.value)
                 return {
@@ -2169,6 +2180,9 @@ class RAGService:
             f"[QueryRouter] Route: {selected_route.value} | "
             f"Requires Retrieval: {routing_decision.requires_retrieval} | Streamed: True"
         )
+        if analysis is not None and analysis.requested_language:
+            # Consumed by the chat handler (never sent to the browser): the language asked for in this message.
+            yield {"type": "answer_language", "requested": analysis.requested_language}
 
         # Path A: Sentimental and Casual Questions -> Direct LLM Stream (Bypass RAG completely)
         if not has_attachments and selected_route == QueryRoute.EMOTIONAL_CASUAL:

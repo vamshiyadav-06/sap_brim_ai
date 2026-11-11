@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { AlertCircle, ArrowRight, Eye, EyeOff, Lock, User } from 'lucide-react';
+import { AlertCircle, ArrowRight, Lock, User } from 'lucide-react';
+import { RevealButton, usePasswordReveal } from '../ui/PasswordReveal';
 import type { ActivationCodeDetails } from '../../types';
 import { PASSWORD_MAX, PASSWORD_MIN, formatDateTime, validateNewPassword } from './orgFormat';
 
@@ -20,7 +21,8 @@ export function ActivationAccountForm({
   const [name, setName] = useState(details.admin_name ?? '');
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
+  const passwordReveal = usePasswordReveal();
+  const confirmReveal = usePasswordReveal();
   const [localError, setLocalError] = useState<string | null>(null);
 
   const handleSubmit = (event: React.FormEvent) => {
@@ -88,7 +90,7 @@ export function ActivationAccountForm({
             <Lock aria-hidden="true" />
             <input
               id="org-activate-password"
-              type={showPassword ? 'text' : 'password'}
+              type={passwordReveal.type}
               required
               minLength={PASSWORD_MIN}
               maxLength={PASSWORD_MAX}
@@ -98,15 +100,7 @@ export function ActivationAccountForm({
               onChange={(e) => setPassword(e.target.value)}
               placeholder={`At least ${PASSWORD_MIN} characters`}
             />
-            <button
-              type="button"
-              className="auth-reveal"
-              onClick={() => setShowPassword((v) => !v)}
-              aria-label={showPassword ? 'Hide password' : 'Show password'}
-              aria-pressed={showPassword}
-            >
-              {showPassword ? <EyeOff aria-hidden="true" /> : <Eye aria-hidden="true" />}
-            </button>
+            <RevealButton visible={passwordReveal.visible} onToggle={passwordReveal.toggle} label="password" />
           </div>
           <small id="org-activate-password-hint" className="auth-hint">
             {PASSWORD_MIN}–{PASSWORD_MAX} characters.
@@ -118,7 +112,7 @@ export function ActivationAccountForm({
             <Lock aria-hidden="true" />
             <input
               id="org-activate-confirm"
-              type={showPassword ? 'text' : 'password'}
+              type={confirmReveal.type}
               required
               minLength={PASSWORD_MIN}
               maxLength={PASSWORD_MAX}
@@ -127,6 +121,7 @@ export function ActivationAccountForm({
               onChange={(e) => setConfirm(e.target.value)}
               placeholder="Repeat the password"
             />
+            <RevealButton visible={confirmReveal.visible} onToggle={confirmReveal.toggle} label="confirmation password" />
           </div>
         </div>
         <button type="submit" disabled={submitting} className="button button-brand auth-submit">

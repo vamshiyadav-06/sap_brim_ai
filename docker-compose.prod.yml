@@ -3,7 +3,7 @@
 #   backend   FastAPI API (backend/Dockerfile); applies migrations on start; not published.
 #   web       Caddy (frontend/Dockerfile): the React app, HTTPS for APP_DOMAIN, /api -> backend.
 #
-#   cp .env.production.example .env        # then replace every "change-me" / example.com value
+#   cp .env.example .env        # then replace every "change-me" / example.com value
 #   docker compose up -d --build            # .env sets COMPOSE_FILE=docker-compose.prod.yml
 #
 # Without that .env line, add `-f docker-compose.prod.yml` to every docker compose command.
@@ -12,7 +12,7 @@
 # and document in it. Back up first (DEPLOYMENT.md, "Backups").
 #
 # The local development setup (database only, backend and frontend run on the host) is docker-compose.yml.
-# Staging uses this same file with .env from .env.staging.example (own COMPOSE_PROJECT_NAME and volumes,
+# Staging uses this same file with .env from .env.example plus the staging overrides in docs/STAGING_DEPLOYMENT.md (own COMPOSE_PROJECT_NAME and volumes,
 # ACCESS_MODE=basic_auth gate, sign-up closed): docs/STAGING_DEPLOYMENT.md. Images are tagged with
 # IMAGE_TAG so a failed deployment can be rolled back by starting the previous tag.
 name: sap_brim_prod
@@ -30,10 +30,10 @@ services:
     environment:
       # Superuser credentials apply only when the volume is first initialised.
       POSTGRES_USER: ${POSTGRES_USER:-sap_assistant}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env (see .env.production.example)}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env (see .env.example)}
       POSTGRES_DB: ${POSTGRES_DB:-sap_assistant}
       # Used by docker/postgres/init to create the sap_brim_ai role and database on a fresh volume.
-      SAP_BRIM_DB_PASSWORD: ${SAP_BRIM_DB_PASSWORD:?Set SAP_BRIM_DB_PASSWORD in .env (see .env.production.example)}
+      SAP_BRIM_DB_PASSWORD: ${SAP_BRIM_DB_PASSWORD:?Set SAP_BRIM_DB_PASSWORD in .env (see .env.example)}
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
@@ -95,6 +95,11 @@ services:
     environment:
       # Migrations run once in the container command before the API starts (RUN_MIGRATIONS_ON_START).
       AUTO_MIGRATE: "False"
+      # Production unless the operator says otherwise. Without this the backend would fall back to
+      # "development" (public /docs, no HTTPS enforcement, non-secure cookie) whenever .env lacks the line.
+      ENVIRONMENT: "${ENVIRONMENT:-production}"
+      # Closed unless .env explicitly opens it; matches the web build argument below.
+      REGISTRATION_ENABLED: "${REGISTRATION_ENABLED:-False}"
       # Requests reach the backend only through the web (Caddy) container, which has the fixed address
       # WEB_IP on the dedicated "internal" network below. Only that single address may set the client IP
       # and scheme through X-Forwarded-* headers; any other container or host cannot forge them.
@@ -135,6 +140,13 @@ services:
         VITE_REGISTRATION_ENABLED: ${REGISTRATION_ENABLED:-False}
     image: sap-brim-web:${IMAGE_TAG:-latest}
     restart: unless-stopped
+    # Caddy only needs to bind ports 80/443; everything else is dropped.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
     environment:
       APP_DOMAIN: ${APP_DOMAIN:?Set APP_DOMAIN in .env (the public host name, e.g. assistant.example.com)}
       # open (production) or basic_auth (staging gate: frontend/caddy/access/basic_auth.caddy).

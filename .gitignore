@@ -8,9 +8,6 @@ __pycache__/
 .env.*
 /.admin-initial-password
 !.env.example
-!.env.production.example
-!.env.staging.example
-!.env.e2e.example
 # Local deployment state written by scripts/staging/*.sh (previous image tag, backups)
 .deploy/
 !scripts/staging/

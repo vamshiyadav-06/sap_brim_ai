@@ -1,7 +1,7 @@
 #!/bin/sh
 # Runs once, when the PostgreSQL volume is first initialised (docker-entrypoint-initdb.d).
 # Creates the application's dedicated role and database with the pgvector extension.
-# Tables and indexes are created by the backend on startup (backend/app/database.py:init_db).
+# Tables and indexes are created by the backend's Alembic migrations when its container starts.
 set -eu
 
 psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname postgres \

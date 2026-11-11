@@ -1,3 +1,11 @@
+## 2026-11-11 - Production readiness (deployment audit)
+
+* Forced production defaults in the prod compose file, hardened Caddy container, `preflight --expect-production`, Redis-outage degradation in the rate limiter, hashed published-secret denylist, `scripts/production/` (validate, deploy, backup, cron, restore rehearsal), CI workflow, deployment docs. Details and open owner actions: NEXT_SESSION.md.
+
+## 2026-11-11 - One env template
+
+* `.env.example` is now the production template; `.env.production.example`, `.env.staging.example`, `.env.e2e.example` removed. Docs, staging scripts, `.gitignore` and `test_deployment_config.py` / `test_single_env_file.py` updated (37 passed). Local development uses the example in SETUP.md 4.4.
+
 ## 2026-11-06 - Deployment fixes: stale test fakes, compose health ordering, rollback and key-rotation docs
 
 * The 10 failing backend tests were stale fixtures, not application defects: the sign-up fakes did not supply the database default `preferred_language` (a real commit + refresh does), and the login fake session lacked `execute`, which the token-wallet top-up calls on sign-in and `/me`. Fixed in `test_audit_access.py`, `test_audit_auth.py` and `test_security_audit_characterization.py`; no test was skipped or deleted and no production code changed for this.

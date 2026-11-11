@@ -1,4 +1,5 @@
 import secrets
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -53,11 +54,24 @@ def test_published_or_weak_secrets_are_reported():
         {"JWT_SECRET": "sap-super-secret-jwt-key-2026-production-ready"},
         {"JWT_SECRET": "short"},
         {"ADMIN_API_KEY": "sap-admin-dev-secret-key-999"},
-        {"SUPER_ADMIN_EMAIL": "admin@example.com", "SUPER_ADMIN_PASSWORD": "Vamshi@06"},
         {"SUPER_ADMIN_EMAIL": "admin@example.com"},
     ):
         values = {"JWT_SECRET": good, "ADMIN_API_KEY": "", "SUPER_ADMIN_EMAIL": "", "SUPER_ADMIN_PASSWORD": "", **bad}
         assert security_settings_errors(Settings(**values)), bad
+
+def test_published_admin_password_is_refused_without_storing_it_in_plain_text(monkeypatch):
+    import hashlib
+    from backend.app import config
+
+    published = "an-example-published-password"
+    monkeypatch.setattr(config, "PUBLISHED_SECRET_HASHES",
+                        config.PUBLISHED_SECRET_HASHES | {hashlib.sha256(published.encode()).hexdigest()})
+    values = {"JWT_SECRET": secrets.token_urlsafe(48), "ADMIN_API_KEY": "", "SUPER_ADMIN_EMAIL": "admin@example.com",
+              "SUPER_ADMIN_PASSWORD": published}
+    assert any("SUPER_ADMIN_PASSWORD" in e for e in security_settings_errors(Settings(**values)))
+    assert all(len(h) == 64 for h in config.PUBLISHED_SECRET_HASHES)
+    assert "PUBLISHED_SECRETS" not in Path(config.__file__).read_text(encoding="utf-8")  # only hashes are kept
+
 
 def test_no_document_download_routes_exist():
     """Verify that no public route exists allowing direct document downloads."""

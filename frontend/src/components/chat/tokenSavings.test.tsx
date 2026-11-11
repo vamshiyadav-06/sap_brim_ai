@@ -96,10 +96,10 @@ describe('TokenSavedToast', () => {
 });
 
 describe('TokenMeterBadge with the wallet', () => {
-  it('puts what is left of the 1,000 beside the tokens used', () => {
+  it('puts what is left of the 100 beside the tokens used', () => {
     const html = renderToStaticMarkup(
-      <TokenMeterBadge usage={{ ...SAVED, cost: 0.5 }} wallet={{ balance: 999.5, refillAt: null }} />,
+      <TokenMeterBadge usage={{ ...SAVED, cost: 0.5 }} wallet={{ balance: 99.5, refillAt: null }} />,
     );
-    expect(html).toContain('You used only 0.5 tokens · 999.5 of 1,000 left');
+    expect(html).toContain('You used only 0.5 tokens · 99.5 of 100 left');
   });
 });

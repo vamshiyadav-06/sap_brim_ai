@@ -13,7 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from backend.app.config import MIN_ADMIN_PASSWORD_LENGTH, PUBLISHED_SECRETS  # noqa: E402
+from backend.app.config import MIN_ADMIN_PASSWORD_LENGTH, is_published_secret  # noqa: E402
 from backend.app.database import SessionLocal  # noqa: E402
 from backend.app.models.user import User  # noqa: E402
 from backend.app.security.auth import hash_password  # noqa: E402
@@ -32,7 +32,7 @@ def main() -> int:
             return 1
 
         password = getpass.getpass("New password: ")
-        if len(password) < MIN_ADMIN_PASSWORD_LENGTH or password in PUBLISHED_SECRETS:
+        if len(password) < MIN_ADMIN_PASSWORD_LENGTH or is_published_secret(password):
             print(f"Password must be private and at least {MIN_ADMIN_PASSWORD_LENGTH} characters. Nothing changed.")
             return 1
         if getpass.getpass("Repeat new password: ") != password:

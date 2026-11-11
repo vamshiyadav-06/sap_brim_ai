@@ -9,7 +9,7 @@ Use Ubuntu 22.04/24.04, Docker Engine with the Compose v2 plugin, Python 3, Git,
 ```sh
 git clone <repository-url> sap-brim-staging
 cd sap-brim-staging
-cp .env.staging.example .env
+cp .env.example .env
 chmod 600 .env
 scripts/staging/init-env.sh
 ```
@@ -46,7 +46,7 @@ docker compose -f docker-compose.prod.yml exec backend \
 Before deploying, build the application images in the isolated E2E configuration without starting containers or creating a database:
 
 ```sh
-cp .env.e2e.example .env.e2e
+# create .env.e2e with: COMPOSE_PROJECT_NAME=sap_brim_e2e APP_ENV_FILE=.env.e2e IMAGE_TAG=e2e APP_DOMAIN=localhost ALLOWED_ORIGINS=https://localhost ENVIRONMENT=development HTTP_PORT=18080 HTTPS_PORT=18443 WEB_BIND=127.0.0.1 ACCESS_MODE=open, plus E2E-only secrets
 scripts/staging/verify-build.sh
 ```
 
@@ -72,7 +72,7 @@ This takes a custom-format dump and restores it into a new timestamped recovery 
 
 ### Charge-free local E2E stack
 
-For authenticated streaming and cancellation/timeout exercises, use a separate E2E Compose project with a fresh `.env.e2e`: `cp .env.e2e.example .env.e2e`. This uses `COMPOSE_PROJECT_NAME=sap_brim_e2e` and separate database volumes. Run `docker compose --env-file .env.e2e -f docker-compose.prod.yml -f docker-compose.e2e.yml up -d --build`. The overlay routes OpenRouter to the local `e2e/stub_llm/server.py`, blanks real API keys, and disables web fallback. Use E2E-only credentials and never point this project at existing staging or production data. Never run `down -v`; leave test artifacts in place until reviewed. Set `E2E_ALLOW_STUB_STREAM=1` only when running Playwright against this stack; streaming tests are skipped by default to avoid unintended provider calls.
+For authenticated streaming and cancellation/timeout exercises, use a separate E2E Compose project with a fresh `.env.e2e`: create it as shown above. This uses `COMPOSE_PROJECT_NAME=sap_brim_e2e` and separate database volumes. Run `docker compose --env-file .env.e2e -f docker-compose.prod.yml -f docker-compose.e2e.yml up -d --build`. The overlay routes OpenRouter to the local `e2e/stub_llm/server.py`, blanks real API keys, and disables web fallback. Use E2E-only credentials and never point this project at existing staging or production data. Never run `down -v`; leave test artifacts in place until reviewed. Set `E2E_ALLOW_STUB_STREAM=1` only when running Playwright against this stack; streaming tests are skipped by default to avoid unintended provider calls.
 
 ## 4. Public tester access
 

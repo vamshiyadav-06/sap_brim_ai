@@ -93,9 +93,16 @@ def _complete(prompt: str, system: str) -> Optional[str]:
     return reply or None
 
 
+def _has_non_ascii_letters(text: str) -> bool:
+    return any(ord(ch) > 127 for ch in (text or "") if ch.isalpha())
+
+
 def question_to_english(question: str, language: str) -> str:
-    """The question in English for the SAP-topic check and retrieval; the original on any failure."""
-    if is_english(language) or not question.strip() or looks_english(question):
+    """The question in English for the SAP-topic check and retrieval; the original on any failure.
+    A question written in another script is translated even when the user's setting is English."""
+    if not question.strip() or looks_english(question):
+        return question
+    if is_english(language) and not _has_non_ascii_letters(question):
         return question
     translated = _complete(
         f"Translate this question to English. Reply with the translation only, no quotes or notes. Keep SAP "
@@ -106,18 +113,100 @@ def question_to_english(question: str, language: str) -> str:
     return translated if translated and len(translated) <= max(2000, len(question) * 6) else question
 
 
-def answer_to_language(answer: str, language: str) -> str:
-    """A finished (English) answer written in the user's language; the original on any failure."""
+def try_answer_to_language(answer: str, language: str) -> Optional[str]:
+    """A finished (English) answer written in `language`; None when the translation could not be made."""
     if is_english(language) or not answer.strip():
         return answer
-    translated = _complete(
+    return _complete(
         f"Translate the following answer into {english_name(language)}. Keep the Markdown structure exactly "
         f"(headings, lists, tables, bold, code blocks). Do not translate or change: SAP transaction codes, table "
         f"and field names, program and class names, code, URLs, product names and abbreviations, or citation "
         f"markers such as [E1] or [E2][E3]. Reply with the translation only.\n\n{answer}",
         "You are a precise technical translator for SAP documentation. You never add, remove or change facts.",
     )
-    return translated or answer
+
+
+def answer_to_language(answer: str, language: str) -> str:
+    """A finished (English) answer written in the user's language; the original on any failure."""
+    return try_answer_to_language(answer, language) or answer
+
+
+# --- which language this answer is written in -----------------------------------------------------------------
+
+# Unicode blocks of the non-Latin scripts: the message itself shows the language. Latin-script languages
+# (Spanish, French...) cannot be told from the script; they follow the user's setting or an explicit request.
+_SCRIPTS = (
+    (0x0C00, 0x0C7F, "te"), (0x0B80, 0x0BFF, "ta"), (0x0C80, 0x0CFF, "kn"), (0x0D00, 0x0D7F, "ml"),
+    (0x0980, 0x09FF, "bn"), (0x0A80, 0x0AFF, "gu"), (0x0A00, 0x0A7F, "pa"), (0x0900, 0x097F, "hi"),
+    (0x0600, 0x06FF, "ar"), (0x3040, 0x30FF, "ja"), (0x4E00, 0x9FFF, "zh"), (0xAC00, 0xD7AF, "ko"),
+    (0x0400, 0x04FF, "ru"),
+)
+
+
+def detect_script_language(text: str, preferred: Optional[str] = None) -> Optional[str]:
+    """The language a message is written in when it uses a non-Latin script, else None. Scripts shared by two
+    supported languages (Devanagari: Hindi/Marathi, Arabic script: Arabic/Urdu) follow the user's setting."""
+    counts: Dict[str, int] = {}
+    for ch in text or "":
+        cp = ord(ch)
+        for low, high, code in _SCRIPTS:
+            if low <= cp <= high:
+                counts[code] = counts.get(code, 0) + 1
+                break
+    if not counts:
+        return None
+    code = max(counts, key=counts.get)
+    preferred = normalize(preferred)
+    if code == "hi" and preferred == "mr":
+        return "mr"
+    if code == "ar" and preferred == "ur":
+        return "ur"
+    return code
+
+
+def code_for(value: Optional[str]) -> Optional[str]:
+    """The supported language code for a code, English name or native name ("te", "Telugu", "తెలుగు"); else None."""
+    wanted = (value or "").strip().lower()
+    if not wanted:
+        return None
+    for code, (english, native) in LANGUAGES.items():
+        if wanted in (code, english.lower(), native.lower(), english.lower().split(" (")[0]):
+            return code
+    return None
+
+
+def resolve_answer_language(preferred: Optional[str], requested: Optional[str], text: str):
+    """(language to answer in, unsupported language name or None) for one message.
+    An explicit request in the message wins ("explain in Telugu"), then the script the message is written in,
+    then the user's Settings language. A requested language that is not supported is returned by name."""
+    asked = (requested or "").strip()
+    if asked:
+        code = code_for(asked)
+        if code:
+            return code, None
+        return normalize(preferred), asked
+    return detect_script_language(text, preferred) or normalize(preferred), None
+
+
+def supported_names() -> str:
+    return ", ".join(name for name, _native in LANGUAGES.values())
+
+
+def unsupported_notice(name: str) -> str:
+    """Fixed reply when the user asks for a language the assistant cannot write in."""
+    name = re.sub(r"[^\w \-]", "", name or "").strip()[:40] or "that language"
+    return (
+        f"I can't write answers in {name} yet. To get answers in another language, go to Settings and change "
+        f"the language to one of: {supported_names()}. I'm happy to answer in English until then."
+    )
+
+
+def translation_failed_note(language: str) -> str:
+    name = english_name(language)
+    return (
+        f"\n\n_I couldn't write this answer in {name} just now. Please try again, or go to Settings and set "
+        f"your language to {name}._"
+    )
 
 
 # --- prompt directive for direct (Low) answers ------------------------------------------------------

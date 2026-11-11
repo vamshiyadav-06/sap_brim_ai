@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Create a private staging .env from the reviewed template. Secret values are never printed.
+# Create a private staging .env from the reviewed .env.example template. Secret values are never printed.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
@@ -13,7 +13,7 @@ import os
 import secrets
 from urllib.parse import quote
 
-template = Path('.env.staging.example').read_text(encoding='utf-8')
+template = Path('.env.example').read_text(encoding='utf-8')
 values = {
     'POSTGRES_PASSWORD': secrets.token_urlsafe(32),
     'SAP_BRIM_DB_PASSWORD': secrets.token_urlsafe(32),

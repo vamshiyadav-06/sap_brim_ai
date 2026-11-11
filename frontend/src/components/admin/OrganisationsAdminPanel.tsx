@@ -13,6 +13,7 @@ import { ConfirmDialog, OrgModal } from '../organisation/OrgDialog';
 import { OneTimeSecret } from '../organisation/OneTimeSecret';
 import { ORG_STATUS_LABELS, formatDate, formatDateTime, isValidEmail } from '../organisation/orgFormat';
 import { OrganisationDetailPanel } from './OrganisationDetailPanel';
+import { useRefreshSpinner } from '../ui/useRefreshSpinner';
 import '../organisation/organisation.css';
 
 type StatusFilter = OrganisationStatus | '';
@@ -87,6 +88,7 @@ export function OrganisationsAdminPanel() {
   const [pendingError, setPendingError] = useState<string | null>(null);
   const [issued, setIssued] = useState<IssuedCode | null>(null);
   const [detailId, setDetailId] = useState<string | null>(null);
+  const spinner = useRefreshSpinner();
 
   useEffect(() => {
     let cancelled = false;
@@ -96,9 +98,12 @@ export function OrganisationsAdminPanel() {
         setOrgs(data);
         setLoadedFilter(filter);
         setError(null);
+        spinner.stop();
       })
       .catch((err) => {
-        if (!cancelled) setError(errorText(err, 'Could not load organisations.'));
+        if (cancelled) return;
+        setError(errorText(err, 'Could not load organisations.'));
+        spinner.stop();
       });
     return () => {
       cancelled = true;
@@ -225,8 +230,14 @@ export function OrganisationsAdminPanel() {
           <p>Organisations are created only here. Activation codes are single-use, time-limited and shown once.</p>
         </div>
         <div className="org-app-actions">
-          <button type="button" className="org-btn" onClick={reload}>
-            <RefreshCw size={14} aria-hidden="true" /> Refresh
+          <button
+            type="button"
+            className="org-btn"
+            disabled={spinner.spinning}
+            aria-busy={spinner.spinning}
+            onClick={() => { spinner.start(); reload(); }}
+          >
+            <RefreshCw size={14} aria-hidden="true" className={spinner.spinning ? 'animate-spin' : ''} /> Refresh
           </button>
           <button type="button" className="org-btn org-btn-primary" onClick={() => setCreating(true)}>
             <Plus size={15} aria-hidden="true" /> Create organisation

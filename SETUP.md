@@ -37,7 +37,7 @@ For what the application does and how it works, see [README.md](README.md). For 
 
 For development, Docker Compose runs **only the database**; the backend and frontend run directly on your machine. To deploy everything in containers on a server (with HTTPS), use **[DEPLOYMENT.md](DEPLOYMENT.md)** instead of this guide.
 
-There is exactly **one settings file**: `.env` in the repository root. Docker Compose reads it for `docker-compose.yml`, and the backend reads it through `backend/app/config.py`. The template is `.env.example`.
+There is exactly **one settings file**: `.env` in the repository root. Docker Compose reads it for `docker-compose.yml`, and the backend reads it through `backend/app/config.py`. The production template is `.env.example`; for local development use the example in section 4.4.
 
 ## 2. Prerequisites
 
@@ -89,16 +89,17 @@ cd SAP_BRIM_Ai
 
 ### 4.1 Create it from the template
 
+`.env.example` is the **production** template (for [DEPLOYMENT.md](DEPLOYMENT.md)). For local development create `.env` yourself from the example in [4.4](#44-example-env-placeholders): it sets the development values (`ENVIRONMENT=development`, a `127.0.0.1` `DATABASE_URL`, `POSTGRES_HOST_PORT`, localhost `ALLOWED_ORIGINS`). Use `.env.example` as the reference for every other setting.
+
 ```powershell
 # Windows
-if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+if (-not (Test-Path .env)) { New-Item .env -ItemType File }
 notepad .env
 ```
 
 ```sh
 # macOS / Linux
-test -f .env || cp .env.example .env
-${EDITOR:-nano} .env
+touch .env && ${EDITOR:-nano} .env
 ```
 
 `.env` is ignored by Git. Never commit it, and never paste its contents into issues, chats or logs.
@@ -169,7 +170,7 @@ WEB_FALLBACK_ENABLED=True
 WEB_SEARCH_API_KEY=your-tavily-api-key
 ```
 
-Every setting not listed falls back to its default in `backend/app/config.py`. `.env.example` documents the commonly changed ones.
+Every setting not listed falls back to its default in `backend/app/config.py`. `.env.example` documents the commonly changed ones (it is the production template).
 
 ## 5. Start PostgreSQL with Docker Compose
 
@@ -408,7 +409,7 @@ Backups (`pg_dump`), restores into a separate database, GUI clients and example 
 
 ## 15. Deploying to a server
 
-**Recommended: Docker.** [DEPLOYMENT.md](DEPLOYMENT.md) deploys the database, backend and web front door (with automatic HTTPS) on one Linux server with `docker compose up -d --build`, using the template `.env.production.example`.
+**Recommended: Docker.** [DEPLOYMENT.md](DEPLOYMENT.md) deploys the database, backend and web front door (with automatic HTTPS) on one Linux server with `docker compose up -d --build`, using the template `.env.example`.
 
 **Without Docker**, the code requires the following.
 
@@ -444,7 +445,7 @@ Also read `HUMAN_ACTIONS.md` before a production deployment: it lists owner deci
 
 | Symptom | Cause and fix |
 | --- | --- |
-| `docker compose up` says `POSTGRES_PASSWORD` / `SAP_BRIM_DB_PASSWORD` must be set | `.env` is missing from the repository root or the values are empty. Create it from `.env.example` ([section 4](#4-configure-the-env-file)). |
+| `docker compose up` says `POSTGRES_PASSWORD` / `SAP_BRIM_DB_PASSWORD` must be set | `.env` is missing from the repository root or the values are empty. Create it as described in [section 4](#4-configure-the-env-file). |
 | `docker` commands fail with "cannot connect to the Docker daemon" | Start Docker Desktop / the Docker service and wait until it is ready (`docker info`). |
 | Docker Desktop on Windows reports read-only file systems, I/O errors or a `docker_data.vhdx` that cannot detach | Engine storage problem, not a database problem. Save work in WSL, run `wsl --shutdown`, then start Docker Desktop again. Do not factory-reset Docker or delete volumes. |
 | Port 5434 already in use | Another PostgreSQL uses it. Set `POSTGRES_HOST_PORT` to a free port and use the same port in `DATABASE_URL`. |

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Layers, Lock, Mail, User as UserIcon, ArrowRight, AlertCircle } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { RevealButton, usePasswordReveal } from '../components/ui/PasswordReveal';
 
 interface RegisterPageProps {
   onSwitchToLogin: () => void;
@@ -11,6 +12,7 @@ export const RegisterPage: React.FC<RegisterPageProps> = ({ onSwitchToLogin }) =
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const reveal = usePasswordReveal();
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -94,13 +96,19 @@ export const RegisterPage: React.FC<RegisterPageProps> = ({ onSwitchToLogin }) =
             <div className="relative">
               <Lock className="w-4 h-4 absolute left-3.5 top-3 text-slate-500" />
               <input
-                type="password"
+                type={reveal.type}
                 required
                 minLength={6}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="••••••••••••"
-                className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-10 pr-4 py-2.5 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-sap-500 focus:ring-1 focus:ring-sap-500"
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-10 pr-11 py-2.5 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-sap-500 focus:ring-1 focus:ring-sap-500"
+              />
+              <RevealButton
+                visible={reveal.visible}
+                onToggle={reveal.toggle}
+                label="password"
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 w-8 h-8 grid place-items-center rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition"
               />
             </div>
           </div>

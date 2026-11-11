@@ -38,6 +38,7 @@ import {
 } from '../../services/api';
 import type { SystemConfig } from '../../services/api';
 import { PageMeta } from '../../components/ui/PageMeta';
+import { useRefreshSpinner } from '../../components/ui/useRefreshSpinner';
 import iconOnly from '../../assets/clyptusap-icon.png';
 
 interface InspectionDoc {
@@ -73,6 +74,7 @@ export const AdminDashboard: React.FC = () => {
 
   // Sources tab state
   const [sourcesLoading, setSourcesLoading] = useState(false);
+  const sourcesSpinner = useRefreshSpinner();
   const [sourcesData, setSourcesData] = useState<{
     summary: any;
     documents: InspectionDoc[];
@@ -391,11 +393,11 @@ export const AdminDashboard: React.FC = () => {
               <div className="flex flex-wrap items-center gap-2 shrink-0">
                 <button
                   type="button"
-                  onClick={fetchSources}
-                  disabled={sourcesLoading}
+                  onClick={() => { sourcesSpinner.start(); void fetchSources().finally(sourcesSpinner.stop); }}
+                  disabled={sourcesLoading || sourcesSpinner.spinning}
                   className="inline-flex items-center justify-center gap-2 h-9 px-3.5 text-xs font-semibold rounded-lg border border-slate-200 dark:border-zinc-700 hover:bg-slate-100 dark:hover:bg-zinc-800 text-slate-700 dark:text-zinc-300 transition cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
                 >
-                  <RefreshCw size={14} className={sourcesLoading ? 'animate-spin' : ''} />
+                  <RefreshCw size={14} className={sourcesLoading || sourcesSpinner.spinning ? 'animate-spin' : ''} />
                   Refresh
                 </button>
 

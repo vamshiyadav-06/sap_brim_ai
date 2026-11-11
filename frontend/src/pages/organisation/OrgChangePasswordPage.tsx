@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { AlertCircle, ArrowRight, Eye, EyeOff, Lock } from 'lucide-react';
+import { AlertCircle, ArrowRight, Lock } from 'lucide-react';
+import { RevealButton, usePasswordReveal } from '../../components/ui/PasswordReveal';
 import { useNavigate } from 'react-router-dom';
 import { PageMeta } from '../../components/ui/PageMeta';
 import { OrgAuthLayout } from '../../components/organisation/OrgAuthLayout';
@@ -17,7 +18,9 @@ export const OrgChangePasswordPage: React.FC = () => {
   const [current, setCurrent] = useState('');
   const [next, setNext] = useState('');
   const [confirm, setConfirm] = useState('');
-  const [showPasswords, setShowPasswords] = useState(false);
+  const currentReveal = usePasswordReveal();
+  const nextReveal = usePasswordReveal();
+  const confirmReveal = usePasswordReveal();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -47,7 +50,6 @@ export const OrgChangePasswordPage: React.FC = () => {
     navigate(destination, { replace: true });
   };
 
-  const inputType = showPasswords ? 'text' : 'password';
 
   return (
     <>
@@ -81,22 +83,14 @@ export const OrgChangePasswordPage: React.FC = () => {
               <Lock aria-hidden="true" />
               <input
                 id="org-current-password"
-                type={inputType}
+                type={currentReveal.type}
                 required
                 maxLength={PASSWORD_MAX}
                 autoComplete="current-password"
                 value={current}
                 onChange={(e) => setCurrent(e.target.value)}
               />
-              <button
-                type="button"
-                className="auth-reveal"
-                onClick={() => setShowPasswords((v) => !v)}
-                aria-label={showPasswords ? 'Hide passwords' : 'Show passwords'}
-                aria-pressed={showPasswords}
-              >
-                {showPasswords ? <EyeOff aria-hidden="true" /> : <Eye aria-hidden="true" />}
-              </button>
+              <RevealButton visible={currentReveal.visible} onToggle={currentReveal.toggle} label="current password" />
             </div>
           </div>
           <div className="auth-field">
@@ -105,7 +99,7 @@ export const OrgChangePasswordPage: React.FC = () => {
               <Lock aria-hidden="true" />
               <input
                 id="org-new-password"
-                type={inputType}
+                type={nextReveal.type}
                 required
                 minLength={PASSWORD_MIN}
                 maxLength={PASSWORD_MAX}
@@ -115,6 +109,7 @@ export const OrgChangePasswordPage: React.FC = () => {
                 onChange={(e) => setNext(e.target.value)}
                 placeholder={`At least ${PASSWORD_MIN} characters`}
               />
+              <RevealButton visible={nextReveal.visible} onToggle={nextReveal.toggle} label="new password" />
             </div>
             <small id="org-new-password-hint" className="auth-hint">
               {PASSWORD_MIN}–{PASSWORD_MAX} characters.
@@ -126,7 +121,7 @@ export const OrgChangePasswordPage: React.FC = () => {
               <Lock aria-hidden="true" />
               <input
                 id="org-confirm-password"
-                type={inputType}
+                type={confirmReveal.type}
                 required
                 minLength={PASSWORD_MIN}
                 maxLength={PASSWORD_MAX}
@@ -134,6 +129,7 @@ export const OrgChangePasswordPage: React.FC = () => {
                 value={confirm}
                 onChange={(e) => setConfirm(e.target.value)}
               />
+              <RevealButton visible={confirmReveal.visible} onToggle={confirmReveal.toggle} label="confirmation password" />
             </div>
           </div>
           <button type="submit" disabled={busy} className="button button-brand auth-submit">

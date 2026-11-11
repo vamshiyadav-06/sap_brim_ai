@@ -1,5 +1,5 @@
 """The project has one settings file: the repository-root .env, read by Docker Compose
-(docker-compose.yml) and by the backend (backend/app/config.py). Its template is .env.example."""
+(docker-compose.prod.yml) and by the backend (backend/app/config.py). Its template is .env.example."""
 
 import re
 
@@ -14,7 +14,7 @@ def _template_keys():
 
 
 def _compose_variables():
-    compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
+    compose = (ROOT_DIR / "docker-compose.prod.yml").read_text(encoding="utf-8")
     return set(re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*)", compose))
 
 
@@ -34,13 +34,13 @@ def test_template_has_no_duplicate_keys():
 
 def test_template_covers_every_compose_variable():
     variables = _compose_variables()
-    assert variables, "docker-compose.yml no longer interpolates any variable"
+    assert variables, "docker-compose.prod.yml no longer interpolates any variable"
     assert variables <= set(_template_keys())
 
 
 def test_every_template_key_is_read_by_compose_or_the_backend():
     # Catches keys left behind by removed services (e.g. the old SearXNG/Siftdog settings).
-    used = _compose_variables() | set(Settings.model_fields)
+    used = _compose_variables() | set(Settings.model_fields) | {"COMPOSE_FILE"}
     assert [k for k in _template_keys() if k not in used] == []
 
 

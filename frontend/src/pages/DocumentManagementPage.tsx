@@ -36,6 +36,7 @@ import { bulkDeleteDocuments } from '../services/bulkDeleteDocuments';
 import type { KBDocument, DocumentCounts, ProcessingProgress } from '../types';
 import { useAuth } from '../context/AuthContext';
 import { Navigate } from 'react-router-dom';
+import { useRefreshSpinner } from '../components/ui/useRefreshSpinner';
 
 export const DocumentManagementPage: React.FC = () => {
   const { user } = useAuth();
@@ -55,6 +56,7 @@ export const DocumentManagementPage: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [loading, setLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const refreshSpinner = useRefreshSpinner();
 
   // Upload state
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
@@ -458,12 +460,12 @@ export const DocumentManagementPage: React.FC = () => {
 
           <div className="flex items-center gap-3">
             <button
-              onClick={() => fetchDocuments(activeTab, searchQuery, true)}
-              disabled={isRefreshing}
+              onClick={() => { refreshSpinner.start(); void fetchDocuments(activeTab, searchQuery, true).finally(refreshSpinner.stop); }}
+              disabled={isRefreshing || refreshSpinner.spinning}
               className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-xl border border-slate-300 dark:border-zinc-700 hover:bg-slate-100 dark:hover:bg-zinc-800 text-slate-700 dark:text-zinc-300 transition"
               title="Refresh document status"
             >
-              <RefreshCw size={14} className={isRefreshing ? 'animate-spin' : ''} />
+              <RefreshCw size={14} className={isRefreshing || refreshSpinner.spinning ? 'animate-spin' : ''} />
               Refresh
             </button>
 
@@ -816,48 +818,51 @@ export const DocumentManagementPage: React.FC = () => {
               ))}
             </div>
 
-            {/* Bulk Delete Selected Button */}
-            {selectedDocs.length > 0 && (
-              <button
-                type="button"
-                onClick={() => setShowBulkDelete(true)}
-                disabled={progress.is_processing}
-                className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap bg-rose-600 hover:bg-rose-700 text-white shadow-xs transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                title={
-                  progress.is_processing
-                    ? 'Wait for processing to finish before deleting'
-                    : 'Delete all selected documents and purge their vectors'
-                }
-              >
-                <Trash2 size={13} />
-                Delete selected ({selectedDocs.length})
-              </button>
-            )}
-
-            {/* Search Input */}
-            <div className="relative w-full md:w-72">
-              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-              <input
-                type="text"
-                placeholder="Search filename or title..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') fetchDocuments(activeTab, searchQuery);
-                }}
-                className="w-full pl-9 pr-8 py-1.5 text-xs rounded-xl border border-slate-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-hidden focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500"
-              />
-              {searchQuery && (
+            {/* Bulk delete + search share the right-hand side so the toolbar stays aligned */}
+            <div className="flex flex-col sm:flex-row sm:items-center gap-2 md:justify-end md:shrink-0">
+              {/* Bulk Delete Selected Button */}
+              {selectedDocs.length > 0 && (
                 <button
-                  onClick={() => {
-                    setSearchQuery('');
-                    fetchDocuments(activeTab, '');
-                  }}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                  type="button"
+                  onClick={() => setShowBulkDelete(true)}
+                  disabled={progress.is_processing}
+                  className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap shrink-0 !text-white bg-rose-600 hover:bg-rose-700 text-white shadow-xs transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                  title={
+                    progress.is_processing
+                      ? 'Wait for processing to finish before deleting'
+                      : 'Delete all selected documents and purge their vectors'
+                  }
                 >
-                  <X size={12} />
+                  <Trash2 size={13} />
+                  Delete selected ({selectedDocs.length})
                 </button>
               )}
+
+              {/* Search Input */}
+              <div className="relative w-full sm:w-64 md:w-72">
+                <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input
+                  type="text"
+                  placeholder="Search filename or title..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') fetchDocuments(activeTab, searchQuery);
+                  }}
+                  className="w-full pl-9 pr-8 py-1.5 text-xs rounded-xl border border-slate-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-hidden focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500"
+                />
+                {searchQuery && (
+                  <button
+                    onClick={() => {
+                      setSearchQuery('');
+                      fetchDocuments(activeTab, '');
+                    }}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                  >
+                    <X size={12} />
+                  </button>
+                )}
+              </div>
             </div>
           </div>
 
@@ -1303,7 +1308,7 @@ export const DocumentManagementPage: React.FC = () => {
             <div className="p-4 border-t border-slate-200 dark:border-zinc-800 flex justify-end">
               <button
                 onClick={() => setDocToInspect(null)}
-                className="px-4 py-2 text-xs font-bold rounded-xl bg-slate-900 dark:bg-white text-white dark:text-slate-900 transition"
+                className="px-4 py-2 text-xs font-bold rounded-xl bg-slate-900 dark:bg-white !text-white dark:!text-slate-900 hover:opacity-90 transition cursor-pointer"
               >
                 Close
               </button>
